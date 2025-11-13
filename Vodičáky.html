@@ -1,0 +1,3997 @@
+<!DOCTYPE html>
+<html lang="sk">
+<head>
+  <meta charset="utf-8" />
+  <title>Interaktívna tabuľa – stroje/pracovníci/odstavenia (snap + stabilný docking + zoom + uložené tabuľe + pretypovanie)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      --board-bg: #f7f8fb;
+      --grid-color: rgba(0,0,0,0.06);
+      --item-shadow: 0 2px 8px rgba(0,0,0,0.12);
+
+      --dot-border: #94a3b8;
+      --dot-green: #22c55e;
+      --dot-red: #ef4444;
+
+      --worker-bg: rgba(255,255,255,0.96);
+      --worker-border: rgba(59,130,246,0.45);
+
+      --actions-reserve: 56px;
+
+      --dot-gap: 8px;
+      --label-min: 110px;
+    }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: #fff;
+      color: #111827;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    .toolbar {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid #e5e7eb;
+      background: #fff;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      flex-wrap: wrap;
+    }
+    .toolbar button, .toolbar select {
+      padding: 8px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .hint {
+      color: #6b7280;
+      font-size: 13px;
+    }
+    .zoom-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin-left: 4px;
+    }
+    #zoom-label {
+      min-width: 52px;
+      text-align: center;
+      font-weight: 600;
+      color: #374151;
+      font-size: 14px;
+    }
+    .board {
+      position: relative;
+      flex: 1 1 auto;
+      overflow: auto;
+      background: var(--board-bg);
+      /* Mriežka vypnutá pri akomkoľvek zoome */
+      background-image: none !important;
+      transform-origin: 0 0;
+    }
+
+    .layer { position: absolute; inset: 0; }
+    .layer.machines { z-index: 1; }
+    .layer.workers  { z-index: 2; pointer-events: none; }
+    .layer.workers .item { pointer-events: auto; }
+
+    .item {
+      position: absolute;
+      min-width: 360px;
+      max-width: 360px;
+      padding: 12px;
+      padding-bottom: var(--actions-reserve);
+      border-radius: 12px;
+      box-shadow: var(--item-shadow);
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
+      color: #0f172a;
+      border: 1px solid rgba(0,0,0,0.08);
+      font-size: 14px;
+      line-height: 1.35;
+      background: #ffffff;
+    }
+    .item:active { cursor: grabbing; }
+    .item[contenteditable="true"] { outline: 2px solid #3b82f6; cursor: text; }
+
+    .item[data-type="stroj"] { border-left: 16px solid #9ca3af; }
+    .item[data-type="stroj"].has-worker.pretyp-off { border-left-color: #22c55e; }
+    .item[data-type="stroj"].has-worker.pretyp-on  { border-left-color: #f59e0b; }
+    .item[data-type="stroj"].has-downtime { border-left-color: #ef4444; }
+
+    .item[data-type="pracovnik"] {
+      background: transparent;
+      border: 1px dashed var(--worker-border);
+      box-shadow: none;
+      padding: 10px;
+      padding-bottom: var(--actions-reserve);
+    }
+    .item[data-type="odstavenie"] {
+      background: transparent;
+      border: 1px dashed var(--worker-border);
+      box-shadow: none;
+      padding: 10px;
+      padding-bottom: var(--actions-reserve);
+      border-left: none;
+    }
+
+    .card { display: grid; gap: 10px; }
+    .machine .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .machine .left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .machine .m-name, .machine .t-name {
+      font-weight: 600;
+      padding: 2px 4px;
+      border-radius: 6px;
+    }
+    .machine .m-name[contenteditable="true"],
+    .machine .t-name[contenteditable="true"] {
+      outline: 2px solid #3b82f6;
+      background: #eef6ff;
+    }
+
+    .pretypovanie-badge {
+      display: none;
+      background: #f59e0b;
+      color: #ffffff;
+      font-weight: 700;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+
+    .worker .header {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 12px;
+    }
+    .worker .w-name {
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: var(--worker-bg);
+      position: relative;
+    }
+    .worker .w-name[contenteditable="true"] {
+      outline: 2px solid #3b82f6;
+      background: #eef6ff;
+    }
+    .worker .center-name {
+      font-weight: 500;
+      color: #1e3a8a;
+      font-size: 13px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      margin-left: 0;
+      background: #e0e7ff;
+      min-width: 40px;
+      max-width: 120px;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .worker .center-name[contenteditable="true"] {
+      outline: 2px solid #3b82f6;
+      background: #eef6ff;
+      color: #1e40af;
+    }
+    .worker .team-name {
+      font-weight: 500;
+      color: #1e3a8a;
+      font-size: 13px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      margin-left: 4px;
+      background: #e0e7ff;
+      min-width: 40px;
+      max-width: 120px;
+      overflow: hidden;
+      white-space: nowrap;
+    }
+    .worker .team-name[contenteditable="true"] {
+      outline: 2px solid #3b82f6;
+      background: #eef6ff;
+      color: #1e40af;
+    }
+    .t-name.hide-when-docked { display: none !important; }
+    .worker .team-name.hide-when-docked { display: none !important; }
+    .worker .center-name.hide-when-docked { display: none !important; }
+
+    .worker .meters-wrap {
+      background: transparent;
+      border-radius: 10px;
+      padding: 8px;
+    }
+    .meters { display: grid; gap: 8px; }
+    .row { display: flex; align-items: center; gap: 10px; }
+    .label { min-width: var(--label-min); color: #374151; font-weight: 600; }
+    .dots { display: inline-flex; gap: var(--dot-gap); position: relative; flex-wrap: wrap; }
+    .dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 2px solid var(--dot-border);
+      background: transparent;
+      padding: 0;
+      outline: none;
+      cursor: pointer;
+      position: relative;
+      box-sizing: border-box;
+    }
+    .machine .dot[data-state="0"] { background: var(--dot-green); border-color: var(--dot-green); }
+    .machine .dot[data-state="1"] { background: var(--dot-red);   border-color: var(--dot-red); }
+    .worker .dot[data-state="0"] { background: transparent; border-color: var(--dot-border); }
+    .worker .dot[data-state="1"] { background: var(--dot-red); border-color: var(--dot-red); }
+
+    .duplicate-btn {
+      position: absolute;
+      right: 44px;
+      bottom: 8px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1px solid #e5e7eb;
+      background: rgba(255,255,255,0.95);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #2563eb;
+      cursor: pointer;
+      z-index: 1;
+    }
+    .duplicate-btn:hover { background: #f1f5fd; }
+    .duplicate-btn svg { width: 16px; height: 16px; pointer-events: none; }
+    .trash-btn {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1px solid #e5e7eb;
+      background: rgba(255,255,255,0.95);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #ef4444;
+      cursor: pointer;
+      z-index: 2;
+    }
+    .trash-btn:hover { background: #fff; }
+    .trash-btn svg { width: 16px; height: 16px; pointer-events: none; }
+
+    .color-btn {
+      position: absolute;
+      right: 80px;
+      bottom: 8px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1px solid #e5e7eb;
+      background: rgba(255,255,255,0.95);
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #6b7280;
+      cursor: pointer;
+      z-index: 1;
+      overflow: hidden;
+    }
+    .color-btn:hover { background: #f9fafb; }
+    .color-btn svg { width: 16px; height: 16px; pointer-events: none; }
+    .color-btn input[type="color"] {
+      position: absolute;
+      inset: 0;
+      opacity: 0;
+      cursor: pointer;
+    }
+
+    /* Stav pracovníka v ľavom spodnom rohu + zarovnanie menu doprava po docku */
+    .item[data-type="pracovnik"] .w-status {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      min-width: 90px;
+      font-weight: 800;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      border: 1px solid #e5e7eb;
+      background: #fee2e2;
+      color: #991b1b;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 3;
+    }
+    .item[data-type="pracovnik"] .w-status.active {
+      background: #dcfce7;
+      color: #166534;
+      border-color: #bbf7d0;
+    }
+    .item[data-type="pracovnik"] .w-status.inactive {
+      background: #fee2e2;
+      color: #991b1b;
+      border-color: #fecaca;
+    }
+
+    .status-badge {
+      position: absolute;
+      right: 8px;
+      bottom: 8px;
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      border: 1px solid #e5e7eb;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 800;
+      color: #ffffff;
+      background: #ef4444;
+    }
+    .status-badge.ok { background: var(--dot-green); }
+    .status-badge.bad { background: var(--dot-red); }
+
+    @keyframes alarm-blink {
+      0%, 100% {
+        opacity: 1;
+        transform: scale(1);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.15), 0 0 0 0 rgba(239,68,68,0.55);
+      }
+      50% {
+        opacity: 0.35;
+        transform: scale(1.06);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.15), 0 0 10px 6px rgba(239,68,68,0.25);
+      }
+    }
+    .item[data-type="stroj"] .status-badge.bad {
+      animation: alarm-blink 1s ease-in-out infinite;
+    }
+
+    .no-drag { -webkit-user-drag: none; }
+
+    .dot[data-note]:hover::after {
+      content: attr(data-note);
+      position: absolute;
+      left: 50%;
+      top: -36px;
+      transform: translateX(-50%);
+      background: #213fa6;
+      color: #fff;
+      font-size: 12px;
+      border-radius: 4px;
+      padding: 4px 8px;
+      white-space: pre-line;
+      min-width: 40px;
+      max-width: 260px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.09);
+      pointer-events: none;
+    }
+
+    .worker .w-name[data-note]:hover::after {
+      content: attr(data-note);
+      position: absolute;
+      left: 50%;
+      top: -36px;
+      transform: translateX(-50%);
+      background: #213fa6;
+      color: #fff;
+      font-size: 12px;
+      border-radius: 4px;
+      padding: 4px 8px;
+      white-space: pre-line;
+      min-width: 40px;
+      max-width: 260px;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.09);
+      pointer-events: none;
+      z-index: 5;
+    }
+
+    .saved-group { display: inline-flex; align-items: center; gap: 8px; }
+    .dropdown { position: relative; display: inline-block; }
+    .dropdown-btn {
+      padding: 8px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .dropdown-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      min-width: 280px;
+      max-height: 320px;
+      overflow: auto;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.12);
+      display: none;
+      z-index: 50;
+      padding: 6px;
+    }
+    .dropdown-menu.open { display: block; }
+    .saved-empty { color: #6b7280; font-size: 13px; padding: 8px 10px; }
+    .saved-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .saved-row:hover { background: #f9fafb; }
+    .saved-row .name { font-weight: 600; color: #111827; }
+    .saved-row .meta { font-size: 12px; color: #6b7280; }
+    .saved-row .del {
+      border: 1px solid #f3f4f6;
+      background: #fff;
+      color: #ef4444;
+      width: 26px; height: 26px;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .saved-row .del:hover { background: #fff1f2; }
+
+    .item[data-type="dochadzka"] { border-left: 16px solid #10b981; }
+    .card.attendance .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .card.attendance .title { font-weight: 800; }
+    .card.attendance .list {
+      display: grid;
+      gap: 6px;
+      max-height: 360px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .card.attendance .att-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #f9fafb;
+    }
+    .card.attendance .att-row .nm { font-weight: 600; }
+    .card.attendance .att-row .meta { color: #6b7280; font-size: 12px; margin-left: 8px; }
+    .card.attendance .btns { display: inline-flex; gap: 6px; }
+    .card.attendance .btns button {
+      padding: 6px 10px;
+      border-radius: 6px;
+      border: 1px solid #d1d5db;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .card.attendance .btns .arrival-btn {
+      background: #ecfdf5;
+      color: #065f46;
+      border-color: #a7f3d0;
+    }
+    .card.attendance .btns .departure-btn {
+      background: #fef2f2;
+      color: #991b1b;
+      border-color: #fecaca;
+    }
+    .card.attendance .att-row.active .nm { color: #065f46; }
+    .card.attendance .att-row.inactive .nm { color: #991b1b; }
+
+    .card.downtime .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .card.downtime .title { display: none; }
+    .card.downtime .center {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 56px;
+      padding: 6px 0;
+    }
+    .card.downtime select {
+      padding: 8px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-weight: 600;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    .item[data-type="stroj"] .presence-indicator {
+      position: absolute;
+      left: 8px;
+      bottom: 8px;
+      border: 1px solid #e5e7eb;
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 12px;
+      font-weight: 800;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: #f3f4f6;
+      color: #111827;
+    }
+    .item[data-type="stroj"] .presence-indicator.present {
+      background: #dcfce7;
+      color: #166534;
+      border-color: #bbf7d0;
+    }
+    .item[data-type="stroj"] .presence-indicator.absent {
+      background: #fee2e2;
+      color: #991b1b;
+      border-color: #fecaca;
+    }
+
+    .toolbar-restore {
+      position: fixed;
+      top: 8px;
+      left: 8px;
+      z-index: 100;
+      padding: 8px 12px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+      cursor: pointer;
+      display: none;
+    }
+    .toolbar-restore:hover { background: #f9fafb; }
+
+    .item[data-type="pracovnik"][data-docked-to] .meters-wrap {
+      visibility: hidden !important;
+      pointer-events: none;
+    }
+
+    .item[data-type="stroj"].alarm-bad .status-badge.bad {
+      left: 50%;
+      top: 50%;
+      right: auto;
+      bottom: auto;
+      transform: translate(-50%, -50%) scale(3);
+      animation: alarm-blink-centered 1s ease-in-out infinite;
+      z-index: 5;
+    }
+    @keyframes alarm-blink-centered {
+      0%, 100% {
+        opacity: 1;
+        transform: translate(-50%, -50%) scale(3);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.15), 0 0 0 0 rgba(239,68,68,0.55);
+      }
+      50% {
+        opacity: 0.35;
+        transform: translate(-50%, -50%) scale(3.18);
+        box-shadow: 0 1px 3px rgba(0,0,0,0.15), 0 0 10px 6px rgba(239,68,68,0.25);
+      }
+    }
+    .item[data-type="stroj"].alarm-bad .row .dot {
+      background: var(--dot-red) !important;
+      border-color: var(--dot-red) !important;
+    }
+  .item[data-type="pracovnik"][data-docked-to] .worker .header {
+    grid-template-columns: 1fr auto;
+    justify-content: flex-end;
+}
+.item[data-type="pracovnik"][data-docked-to] .worker .header {
+  grid-template-columns: 1fr auto;
+}
+.item[data-type="pracovnik"][data-docked-to] .worker .w-name {
+  justify-self: end;
+  text-align: right;
+  margin-right: 0;
+  margin-left: auto !important;
+  margin-top: 0 !important;
+}
+
+    /* --- Modal (kvalifikačná/školenia) --- */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(17,24,39,0.45);
+      display: none;
+      z-index: 200;
+    }
+    .modal-overlay.open { display: block; }
+    .modal {
+      position: absolute;
+      left: 50%; top: 50%;
+      transform: translate(-50%, -50%);
+      width: min(1200px, 96vw);
+      max-height: 86vh;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      box-shadow: 0 18px 36px rgba(0,0,0,0.25);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+    .modal .hd {
+      padding: 12px 16px;
+      border-bottom: 1px solid #e5e7eb;
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      flex-wrap: wrap;
+    }
+    .modal .hd .title { font-weight: 800; }
+    .modal .bd {
+      padding: 12px 16px;
+      overflow: auto;
+    }
+    .modal .ft {
+      padding: 12px 16px;
+      border-top: 1px solid #e5e7eb;
+      display: flex; gap: 8px; justify-content: flex-end;
+    }
+    .modal .tbl {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+    .modal .tbl th, .modal .tbl td {
+      border: 1px solid #e5e7eb;
+      padding: 6px 8px;
+      text-align: center;
+    }
+    .modal .tbl th.sticky {
+      position: sticky; top: 0; background: #f9fafb; z-index: 2;
+    }
+    .modal .tbl th.grp {
+      background: #f3f4f6; font-weight: 800; text-transform: uppercase; font-size: 12px;
+    }
+    .modal .tbl td.name, .modal .tbl th.name {
+      text-align: left; white-space: nowrap; position: sticky; left: 0; background: #fff; z-index: 3;
+    }
+    .modal .hint { color: #6b7280; font-size: 13px; }
+
+/* --- Blikanie mena pri chýbajúcich školeniach --- */
+@keyframes name-blink-red {
+  0%, 100% { color: #991b1b; background: #fee2e2; box-shadow: 0 0 0 0 rgba(239,68,68,0.55); }
+  40% { color: #7f1d1d; background: #fca5a5; box-shadow: 0 0 16px 8px rgba(239,68,68,0.55); }
+  50% { color: #ffffff; background: #ef4444; box-shadow: 0 0 28px 14px rgba(239,68,68,0.65); }
+  60% { color: #7f1d1d; background: #fca5a5; box-shadow: 0 0 16px 8px rgba(239,68,68,0.55); }
+}
+.worker .w-name.warn-missing-train { animation: name-blink-red 1s ease-in-out infinite; }
+.card.attendance .nm.warn-missing-train { animation: name-blink-red 1s ease-in-out infinite; display: inline-block; padding: 0 4px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="open-market-local" title="Zobraziť lokálny trh práce">Trh práce</button>
+    <button id="add-machine" style="background:#22c55e;color:#fff;border-color:#22c55e">Pridať stroj</button>
+    <button id="add-worker" style="background:#22c55e;color:#fff;border-color:#22c55e">Pridať pracovník</button>
+    <button id="add-downtime" style="background:#f59e0b;color:#111827;border-color:#f59e0b">Pridať odstavenie</button>
+
+    <div class="saved-group">
+      <button id="save-board" title="Uložiť aktuálnu tabuľu" style="border-color:#cbd5e1">Uložiť tabuľu</button>
+      <div class="dropdown">
+        <button id="saved-list-btn" class="dropdown-btn" title="Zobraziť uložené tabuľe">Uložené tabuľe ▾</button>
+        <div id="saved-menu" class="dropdown-menu" role="menu" aria-label="Uložené tabuľe"></div>
+      </div>
+    </div>
+
+    <button id="export-data" title="Exportovať rozloženie a uložené tabuľe">Exportovať</button>
+    <button id="import-btn" title="Importovať zo súboru JSON">Importovať</button>
+   <input type="file" id="import-file" accept="application/json" multiple style="display:none" />
+
+    <div class="team-buttons" id="team-buttons" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+
+    <button id="set-dots-count" title="Zmeniť počet bodiek na všetkých kartách">Nastaviť počet bodiek</button>
+    <button id="open-qual-matrix" title="Otvoriť kvalifikačnú maticu">Kvalifikačná matica</button>
+    <button id="open-train-matrix" title="Otvoriť tabuľku školení">Odchýlka od štandardu</button>
+
+    <div class="zoom-group">
+      <button id="zoom-out" title="Zmenšiť (Ctrl+Minus)">–</button>
+      <span id="zoom-label">100%</span>
+      <button id="zoom-in" title="Zväčšiť (Ctrl+Plus)">+</button>
+    </div>
+
+    <button id="clear-btn" style="background:#ef4444;color:#fff;border-color:#ef4444">Vymazať uložené rozloženie</button>
+
+    <button id="toggle-attendance" title="Zobraziť/Skryť kartu dochádzky">Pridať dochádzku</button>
+
+    <span id="scan-indicator" class="hint" title="Posledný načítaný identifikátor"
+          style="display:none;background:#eef2ff;border:1px solid #c7d2fe;border-radius:6px;padding:4px 8px;font-weight:600"></span>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:10px">
+      <button id="hide-toolbar" title="Skryť hornú lištu">Skryť hornú lištu</button>
+    </div>
+  </div>
+
+  <button id="show-toolbar" class="toolbar-restore" title="Zobraziť hornú lištu">Zobraziť lištu</button>
+
+  <div id="board" class="board" aria-label="Interaktívna tabuľa">
+    <div id="layer-machines" class="layer machines"></div>
+    <div id="layer-workers" class="layer workers"></div>
+  </div>
+
+  <script>
+    const board = document.getElementById('board');
+    const layerMachines = document.getElementById('layer-machines');
+    const layerWorkers  = document.getElementById('layer-workers');
+
+    const toolbar = document.querySelector('.toolbar');
+    const showToolbarBtn = document.getElementById('show-toolbar');
+    const hideToolbarBtn = document.getElementById('hide-toolbar');
+
+    const addMachineBtn = document.getElementById('add-machine');
+    const addWorkerBtn = document.getElementById('add-worker');
+    const addDowntimeBtn = document.getElementById('add-downtime');
+    const toggleAttendanceBtn = document.getElementById('toggle-attendance');
+    const clearBtn = document.getElementById('clear-btn');
+    const setDotsBtn = document.getElementById('set-dots-count');
+    const openQualBtn = document.getElementById('open-qual-matrix');
+    const openTrainBtn = document.getElementById('open-train-matrix');
+    const zoomInBtn = document.getElementById('zoom-in');
+    const zoomOutBtn = document.getElementById('zoom-out');
+    const zoomLabel = document.getElementById('zoom-label');
+
+    const saveBoardBtn   = document.getElementById('save-board');
+    const savedListBtn   = document.getElementById('saved-list-btn');
+    const savedMenu      = document.getElementById('saved-menu');
+
+    const exportBtn  = document.getElementById('export-data');
+    const importBtn  = document.getElementById('import-btn');
+    const importInput = document.getElementById('import-file');
+
+    const scanIndicator = document.getElementById('scan-indicator');
+
+    const STORAGE_KEY = 'interactive-board-v13';
+    const SETTINGS_KEY = 'interactive-board-settings';
+    const SAVED_BOARDS_KEY = 'interactive-board-saved-boards-v1';
+    const QUAL_MATRIX_KEY = 'interactive-board-qual-matrix-v2';
+    const TRAIN_MATRIX_KEY = 'interactive-board-train-matrix-v1';
+
+    const GRID = 20;
+
+    let ZOOM = 1;
+    const ZOOM_MIN = 0.1;
+    const ZOOM_MAX = 2;
+    const ZOOM_STEP = 0.05;
+
+    // Filtrovanie na ploche len podľa tímu
+    let currentTeamFilter = null;
+
+    // Filter strediska v kvalifikačnej matici
+    let qualCenterFilter = null;
+
+    // Filter strediska v odchýlke od štandardu (školenia)
+    let trainCenterFilter = null;
+
+    function loadSettingsObj() {
+      try { return JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'); }
+      catch { return {}; }
+    }
+    function saveSettingsObj(patch) {
+      const s = loadSettingsObj();
+      Object.assign(s, patch);
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+    }
+
+    function updateUndockedCardsVisibility() {
+      const toolbarIsHidden = (toolbar.style.display === 'none');
+      const sel = '.item[data-type="pracovnik"], .item[data-type="odstavenie"]';
+      board.querySelectorAll(sel).forEach(el => {
+        const docked = !!el.dataset.dockedTo;
+        el.style.display = (toolbarIsHidden && !docked) ? 'none' : '';
+      });
+    }
+    function applyToolbarHidden(hidden, opts = { save: true }) {
+      toolbar.style.display = hidden ? 'none' : 'flex';
+      showToolbarBtn.style.display = hidden ? 'inline-flex' : 'none';
+      if (opts.save) saveSettingsObj({ toolbarHidden: hidden });
+      updateUndockedCardsVisibility();
+    }
+
+    let zCounter = 1;
+    let drag = null;
+
+    const counters = { stroj: 0, pracovnik: 0, generic: 0, odstavenie: 0 };
+    let DOTS_PER_ROW = 5;
+
+    {
+      const s = loadSettingsObj();
+      if (typeof s.dotsPerRow === 'number' && s.dotsPerRow >= 1 && s.dotsPerRow <= 20) DOTS_PER_ROW = s.dotsPerRow;
+      if (typeof s.zoom === 'number' && s.zoom >= ZOOM_MIN && s.zoom <= ZOOM_MAX) ZOOM = s.zoom;
+      if (typeof s.toolbarHidden === 'boolean') {
+        applyToolbarHidden(s.toolbarHidden, { save: false });
+      }
+    }
+
+    function applyDotsLayoutVars() {
+      if (DOTS_PER_ROW >= 9) {
+        document.documentElement.style.setProperty('--dot-gap', '6px');
+        document.documentElement.style.setProperty('--label-min', '100px');
+      } else {
+        document.documentElement.style.setProperty('--dot-gap', '8px');
+        document.documentElement.style.setProperty('--label-min', '110px');
+      }
+    }
+    applyDotsLayoutVars();
+
+    function updateZoomLabel() {
+      zoomLabel.textContent = Math.round(ZOOM * 100) + '%';
+    }
+    function applyZoom() {
+      board.style.zoom = String(ZOOM);
+      updateZoomLabel();
+      saveSettingsObj({ zoom: ZOOM });
+    }
+    applyZoom();
+
+    function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
+    function snap(n, step = GRID) { return Math.round(n / step) * step; }
+    function getDotState(btn) {
+      const v = parseInt(btn.dataset.state ?? '0', 10);
+      return Number.isFinite(v) ? v : 0;
+    }
+    function setDotState(btn, state) { btn.dataset.state = String(state); }
+    function formatDate(ts) {
+      try { return new Date(ts).toLocaleString('sk-SK'); }
+      catch { return ''; }
+    }
+
+    function rgbToHex(rgb) {
+      const m = (rgb || '').match(/^rgba?\((\d+),\s*(\d+),\s*(\d+)/i);
+      if (!m) return '#ffffff';
+      const r = (+m[1]).toString(16).padStart(2, '0');
+      const g = (+m[2]).toString(16).padStart(2, '0');
+      const b = (+m[3]).toString(16).padStart(2, '0');
+      return `#${r}${g}${b}`;
+    }
+    function setMachineBg(el, color) {
+      el.style.background = color;
+      el.dataset.bg = color;
+    }
+
+    function getRect(el) {
+      const br = board.getBoundingClientRect();
+      const r = el.getBoundingClientRect();
+      const z = ZOOM || 1;
+      const left = (r.left - br.left) / z;
+      const top  = (r.top  - br.top)  / z;
+      const width  = r.width  / z;
+      const height = r.height / z;
+      return { left, top, width, height, right: left + width, bottom: top + height };
+    }
+    function pointInRect(px, py, rect) { return px >= rect.left && px <= rect.right && py >= rect.top && py <= rect.bottom; }
+    function intersectionArea(a, b) {
+      const xOverlap = Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left));
+      const yOverlap = Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+      return xOverlap * yOverlap;
+    }
+
+    function centerItemOverMachine(itemEl, machineEl) {
+      const wr = getRect(itemEl);
+      const mr = getRect(machineEl);
+      const BIAS_X = 0, BIAS_Y = 1;
+      let nx = mr.left + (mr.width - wr.width) / 2 + BIAS_X;
+      let ny = mr.top + (mr.height - wr.height) / 2 + BIAS_Y;
+      nx = clamp(nx, 0, Math.max(0, board.clientWidth - wr.width));
+      ny = Math.max(0, ny);
+      itemEl.style.left = nx + 'px';
+      itemEl.style.top = ny + 'px';
+      itemEl.animate([{ transform: 'scale(0.98)' }, { transform: 'scale(1)' }], { duration: 150 });
+    }
+    function isItemDockedToMachine(itemEl, machineEl) {
+      const wr = getRect(itemEl), mr = getRect(machineEl);
+      const wcx = wr.left + wr.width / 2, wcy = wr.top + wr.height / 2;
+      if (pointInRect(wcx, wcy, mr)) return true;
+      const wArea = wr.width * wr.height;
+      const a = intersectionArea(wr, mr);
+      return a >= 0.2 * wArea;
+    }
+
+    function getItemsSnapshot() {
+      return [...board.querySelectorAll('.item')].map(el => {
+        const base = {
+          id: el.dataset.id,
+          x: parseFloat(el.style.left) || 0,
+          y: parseFloat(el.style.top) || 0,
+          z: parseInt(el.style.zIndex || '1', 10),
+          type: el.dataset.type || 'generic'
+        };
+        if (base.type === 'stroj') {
+          const mName = el.querySelector('.m-name')?.textContent ?? '';
+          const tName = el.querySelector('.t-name')?.textContent ?? '';
+          const obsluha = [...el.querySelectorAll('.machine .row[data-row="obsluha"] .dot')].map(v => ({ state: Math.min(1, getDotState(v)), note: v.dataset.note || "" }));
+          const nastavovanie = [...el.querySelectorAll('.machine .row[data-row="nastavovanie"] .dot')].map(v => ({ state: Math.min(1, getDotState(v)), note: v.dataset.note || "" }));
+          const bg = el.dataset.bg || '';
+          return { ...base, machineName: mName, teamName: tName, obsluha, nastavovanie, bg };
+        } else if (base.type === 'pracovnik') {
+          const wName = el.querySelector('.w-name')?.textContent ?? '';
+          const teamName = el.querySelector('.team-name')?.textContent ?? '';
+          const centerName = el.querySelector('.center-name')?.textContent ?? '';
+          const workerNote = el.querySelector('.w-name')?.dataset.note || "";
+          const obsluha = [...el.querySelectorAll('.worker .row[data-row="obsluha"] .dot')].map(v => ({ state: Math.min(1, getDotState(v)), note: v.dataset.note || "" }));
+          const nastavovanie = [...el.querySelectorAll('.worker .row[data-row="nastavovanie"] .dot')].map(v => ({ state: Math.min(1, getDotState(v)), note: v.dataset.note || "" }));
+          const dockedTo = el.dataset.dockedTo || null;
+          const offX = parseFloat(el.dataset.offX) || 0;
+          const offY = parseFloat(el.dataset.offY) || 0;
+          const active = el.dataset.active === '1' ? 1 : 0;
+          return { ...base, workerName: wName, teamName, centerName, workerNote, obsluha, nastavovanie, dockedTo, offX, offY, active };
+        } else if (base.type === 'odstavenie') {
+          const reason = el.querySelector('.downtime select')?.value || 'planned';
+          const dockedTo = el.dataset.dockedTo || null;
+          const offX = parseFloat(el.dataset.offX) || 0;
+          const offY = parseFloat(el.dataset.offY) || 0;
+          return { ...base, reason, dockedTo, offX, offY };
+        } else {
+          return { ...base, text: el.innerText };
+        }
+      });
+    }
+
+    function saveState() {
+      const items = getItemsSnapshot();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+    }
+
+    function loadSavedBoards() { try { return JSON.parse(localStorage.getItem(SAVED_BOARDS_KEY) || '[]'); } catch { return []; } }
+    function saveSavedBoards(arr) { localStorage.setItem(SAVED_BOARDS_KEY, JSON.stringify(arr)); }
+    function renderSavedMenu() {
+      const data = loadSavedBoards();
+      savedMenu.innerHTML = '';
+      if (!data.length) {
+        const empty = document.createElement('div');
+        empty.className = 'saved-empty';
+        empty.textContent = 'Žiadne uložené tabuľe.';
+        savedMenu.appendChild(empty);
+        return;
+      }
+      data.sort((a,b) => b.savedAt - a.savedAt).forEach(rec => {
+        const row = document.createElement('div');
+        row.className = 'saved-row';
+        row.dataset.id = rec.id;
+
+        const cell = document.createElement('div');
+        cell.style.display = 'flex';
+        cell.style.flexDirection = 'column';
+        cell.style.gap = '2px';
+        const name = document.createElement('div');
+        name.className = 'name';
+        name.textContent = rec.name || '(bez názvu)';
+        const meta = document.createElement('div');
+        meta.className = 'meta';
+        meta.textContent = `Uložené: ${formatDate(rec.savedAt)}`;
+        cell.appendChild(name);
+        cell.appendChild(meta);
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.className = 'del';
+        del.title = 'Zmazať';
+        del.textContent = '×';
+
+        cell.addEventListener('click', () => { loadBoardById(rec.id); toggleSavedMenu(false); });
+        del.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (!confirm(`Odstrániť uloženú tabuľu „${rec.name}“?`)) return;
+          const arr = loadSavedBoards().filter(x => x.id !== rec.id);
+          saveSavedBoards(arr);
+          renderSavedMenu();
+        });
+
+        row.appendChild(cell);
+        row.appendChild(del);
+        savedMenu.appendChild(row);
+      });
+    }
+
+    function toggleSavedMenu(open) {
+      if (typeof open === 'boolean') savedMenu.classList.toggle('open', open);
+      else savedMenu.classList.toggle('open');
+      if (savedMenu.classList.contains('open')) renderSavedMenu();
+    }
+    document.addEventListener('click', (e) => {
+      if (!savedMenu.classList.contains('open')) return;
+      const within = e.target.closest('#saved-menu') || e.target.closest('#saved-list-btn');
+      if (!within) toggleSavedMenu(false);
+    });
+
+    function saveBoardFlow() {
+      const items = getItemsSnapshot();
+      const settings = { dotsPerRow: DOTS_PER_ROW, zoom: ZOOM, toolbarHidden: (toolbar.style.display === 'none') };
+      const nameDefault = suggestNextBoardName();
+      const name = prompt('Názov uloženej tabuľe:', nameDefault);
+      if (name === null) return;
+      const rec = { id: crypto.randomUUID(), name: (name || nameDefault).trim(), savedAt: Date.now(), items, settings };
+      const arr = loadSavedBoards(); arr.push(rec); saveSavedBoards(arr);
+      renderSavedMenu();
+      alert('Tabuľa bola uložená.');
+    }
+    function suggestNextBoardName() {
+      const arr = loadSavedBoards(); const base = 'Tabuľa';
+      let idx = 1; const names = new Set(arr.map(x => x.name));
+      while (names.has(`${base} ${idx}`)) idx++;
+      return `${base} ${idx}`;
+    }
+
+    function clearBoardUI() {
+      [...board.querySelectorAll('.item')].forEach(n => n.remove());
+      zCounter = 1; counters.stroj = counters.pracovnik = counters.generic = counters.odstavenie = 0;
+    }
+
+
+
+
+
+
+    function loadBoardById(id) {
+      const rec = loadSavedBoards().find(x => x.id === id);
+      if (!rec) { alert('Uložená tabuľa sa nenašla.'); return; }
+
+      if (rec.settings && typeof rec.settings.dotsPerRow === 'number') {
+        DOTS_PER_ROW = rec.settings.dotsPerRow;
+        saveSettingsObj({ dotsPerRow: DOTS_PER_ROW });
+        applyDotsLayoutVars();
+      }
+      if (rec.settings && typeof rec.settings.zoom === 'number') {
+        ZOOM = clamp(rec.settings.zoom, ZOOM_MIN, ZOOM_MAX);
+        applyZoom();
+      }
+      if (rec.settings && typeof rec.settings.toolbarHidden === 'boolean') {
+        applyToolbarHidden(rec.settings.toolbarHidden);
+      }
+
+      clearBoardUI();
+      const items = Array.isArray(rec.items) ? rec.items : [];
+      let maxZ = 1;
+      items.forEach(d => {
+        const el = createItem(d);
+        const z = parseInt(el.style.zIndex || '1', 10);
+        if (z > maxZ) maxZ = z;
+      });
+      zCounter = maxZ;
+
+
+placeAllDockedWorkers();
+placeAllDockedDowntimes();
+updateDockUI();
+updateTeamButtons();
+refreshAttendanceCards();
+
+migrateQualMatrixToNameKeys();
+migrateTrainMatrixToNameKeys();
+applyTrainingComplianceWarnings();
+
+if (trainModal && trainModal.classList.contains('open')) {
+  buildTrainTable();
+}
+	}
+
+
+
+
+
+
+    function createDotsRow(rowName, stateArray = [], states = 2, ownerClass = 'machine') {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.dataset.row = rowName;
+      const label = document.createElement('span');
+      label.className = 'label';
+      label.textContent = rowName === 'obsluha' ? 'Obsluha' : 'Nastavovanie';
+      const dots = document.createElement('div');
+      dots.className = 'dots';
+      for (let i = 0; i < DOTS_PER_ROW; i++) {
+        let dotObj = stateArray[i];
+        if (typeof dotObj === 'number') dotObj = { state: dotObj, note: "" };
+
+        const defaultState = ownerClass === 'machine' ? 1 : 0;
+        dotObj = dotObj || { state: defaultState, note: "" };
+
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'dot no-drag';
+        setDotState(b, dotObj.state);
+        if (dotObj.note) b.dataset.note = dotObj.note;
+        const ownerText = (ownerClass === 'machine') ? 'Stroj' : 'Pracovník';
+        b.setAttribute('aria-label', `${ownerText} – ${label.textContent} – ${i+1}`);
+        dots.appendChild(b);
+      }
+      row.appendChild(label);
+      row.appendChild(dots);
+      return row;
+    }
+
+    function attachTrash(el) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'trash-btn no-drag';
+      btn.title = 'Zmazať';
+      btn.setAttribute('aria-label', 'Zmazať');
+      btn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M9 3h6a1 1 0 0 1 1 1v1h3a1 1 0 1 1 0 2h-1v12a3 3 0 0 1-3 3H9a3 3 0 0 1-3-3V7H5a1 1 0 1 1 0-2h3V4a1 1 0 0 1 1-1Zm1 2h4V5h-4ZM8 7v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V7H8Zm3 2a1 1 0 0 1 1 1v7a1 1 0 1 1-2 0V10a1 1 0 0 1 1-1Zm4 0a1 1 0 0 1 1 1v7a1 1 0 1 1-2 0V10a1 1 0 0 1 1-1Z"/>
+        </svg>
+      `;
+      el.appendChild(btn);
+    }
+    function attachDuplicate(el) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'duplicate-btn no-drag';
+      btn.title = 'Duplikovať';
+      btn.setAttribute('aria-label', 'Duplikovať');
+      btn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+        </svg>
+      `;
+      el.appendChild(btn);
+    }
+    function attachColorPicker(el) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'color-btn no-drag';
+      btn.title = 'Farba pozadia';
+      btn.setAttribute('aria-label', 'Zmeniť farbu pozadia karty');
+
+      btn.innerHTML = `
+        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <path d="M12 3a9 9 0 1 0 0 18h2.5a2.5 2.5 0 0 0 0-5H14a1 1 0 1 1 0-2h.5A4.5 4.5 0 1 0 10 14a1 1 0 0 1-1.73 1A6.999 6.999 0 1 1 12 5a1 1 0 1 1 0-2zM7 9.5A1.5 1.5 0 1 1 10 9.5 1.5 1.5 0 0 1 7 9.5zm4-3A1.5 1.5 0 1 1 14 6.5 1.5 1.5 0 0 1 11 6.5zm4 3A1.5 1.5 0 1 1 18 9.5 1.5 1.5 0 0 1 15 9.5z"/>
+        </svg>
+      `;
+
+      const input = document.createElement('input');
+      input.type = 'color';
+      const current = el.dataset.bg || rgbToHex(getComputedStyle(el).backgroundColor || '#ffffff');
+      input.value = current;
+      btn.appendChild(input);
+
+      input.addEventListener('input', () => {
+        setMachineBg(el, input.value);
+        saveState();
+      });
+
+      el.appendChild(btn);
+    }
+    function attachStatus(el) {
+      const badge = document.createElement('div');
+      badge.className = 'status-badge no-drag';
+      badge.setAttribute('aria-hidden', 'true');
+      el.appendChild(badge);
+    }
+    function attachPresenceIndicator(el) {
+      const pi = document.createElement('div');
+      pi.className = 'presence-indicator no-drag';
+      pi.setAttribute('aria-hidden', 'true');
+      el.appendChild(pi);
+    }
+
+    function renderMachineContent(el, data = {}) {
+      const wrap = document.createElement('div');
+      wrap.className = 'card machine';
+
+      const header = document.createElement('div');
+      header.className = 'header';
+
+      const left = document.createElement('div');
+      left.className = 'left';
+
+      const m = document.createElement('span');
+      m.className = 'm-name no-drag';
+      m.contentEditable = 'true';
+      m.spellcheck = false;
+
+      const pretyp = document.createElement('span');
+      pretyp.className = 'pretypovanie-badge';
+      pretyp.textContent = 'Pretypovanie';
+
+      left.appendChild(m);
+      left.appendChild(pretyp);
+
+      const tName = document.createElement('span');
+      tName.className = 't-name no-drag';
+      tName.contentEditable = 'true';
+      tName.spellcheck = false;
+
+      counters.stroj = counters.stroj || 0;
+      if (!data.machineName) { counters.stroj += 1; data.machineName = `Stroj ${counters.stroj}`; }
+      if (!data.teamName) data.teamName = '0095-';
+      m.textContent = data.machineName;
+      tName.textContent = data.teamName;
+
+      header.appendChild(left);
+      header.appendChild(tName);
+
+      const meters = document.createElement('div');
+      meters.className = 'meters';
+      meters.appendChild(createDotsRow('obsluha', data.obsluha, 2, 'machine'));
+      meters.appendChild(createDotsRow('nastavovanie', data.nastavovanie, 2, 'machine'));
+
+      wrap.appendChild(header);
+      wrap.appendChild(meters);
+      el.appendChild(wrap);
+    }
+
+    function renderWorkerContent(el, data = {}) {
+      const wrap = document.createElement('div');
+      wrap.className = 'card worker';
+      const header = document.createElement('div');
+      header.className = 'header';
+
+      const status = document.createElement('span');
+      status.className = 'w-status no-drag inactive';
+      status.textContent = 'Neaktívny';
+
+      const center = document.createElement('span');
+      center.className = 'center-name no-drag';
+      center.contentEditable = 'true';
+      center.spellcheck = false;
+      center.textContent = data.centerName || '';
+
+      const w = document.createElement('span');
+      w.className = 'w-name no-drag';
+      w.contentEditable = 'true';
+      w.spellcheck = false;
+      counters.pracovnik = counters.pracovnik || 0;
+      if (!data.workerName) { counters.pracovnik += 1; data.workerName = `Pracovník ${counters.pracovnik}`; }
+      w.textContent = data.workerName;
+
+      w.addEventListener('focus', () => {
+        w.dataset.prevKey = normalizeNameKey(w.textContent || '');
+      });
+
+      const tName = document.createElement('span');
+      tName.className = 'team-name no-drag';
+      tName.contentEditable = 'true';
+      tName.spellcheck = false;
+      tName.textContent = data.teamName || "";
+
+      header.appendChild(center);
+      header.appendChild(w);
+      header.appendChild(tName);
+
+      const metersWrap = document.createElement('div');
+      metersWrap.className = 'meters-wrap';
+      const meters = document.createElement('div');
+      meters.className = 'meters';
+      meters.appendChild(createDotsRow('obsluha', data.obsluha, 2, 'worker'));
+      meters.appendChild(createDotsRow('nastavovanie', data.nastavovanie, 2, 'worker'));
+      metersWrap.appendChild(meters);
+
+      wrap.appendChild(header);
+      wrap.appendChild(metersWrap);
+
+      el.appendChild(wrap);
+      el.appendChild(status);
+    }
+
+    function buildDowntimeOptions(select, value = 'planned') {
+      const options = [
+        { value: 'missingMaterial', label: 'Chýba materiál' },
+        { value: 'missingStaff',    label: 'Chýba personál' },
+        { value: 'missingTool',     label: 'Chýba náradie' },
+        { value: 'planned',         label: 'Plánované odstavenie' },
+        { value: 'electric',        label: 'Elektrická porucha' },
+        { value: 'mechanic',        label: 'Mechanická porucha' }
+      ];
+      select.innerHTML = '';
+      options.forEach(o => {
+        const opt = document.createElement('option');
+        opt.value = o.value;
+        opt.textContent = o.label;
+        select.appendChild(opt);
+      });
+      select.value = options.some(o => o.value === value) ? value : 'planned';
+    }
+    function renderDowntimeContent(el, data = {}) {
+      const wrap = document.createElement('div');
+      wrap.className = 'card downtime';
+
+      const header = document.createElement('div');
+      header.className = 'header';
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = 'Odstavenie';
+      header.appendChild(title);
+
+      const center = document.createElement('div');
+      center.className = 'center';
+
+      const select = document.createElement('select');
+      buildDowntimeOptions(select, data.reason || 'planned');
+      select.addEventListener('change', () => saveState());
+
+      center.appendChild(select);
+      wrap.appendChild(header);
+      wrap.appendChild(center);
+      el.appendChild(wrap);
+    }
+
+    function applyWorkerStatusUI(workerEl) {
+      const s = workerEl.querySelector('.w-status');
+      if (!s) return;
+      const active = workerEl.dataset.active === '1';
+      s.textContent = active ? 'Aktívny' : 'Neaktívny';
+      s.classList.toggle('active', active);
+      s.classList.toggle('inactive', !active);
+      const docked = !!workerEl.dataset.dockedTo;
+      s.style.visibility = docked ? 'hidden' : 'visible';
+    }
+
+    function setWorkerActive(workerEl, active, opts = { save: true }) {
+      workerEl.dataset.active = active ? '1' : '0';
+      applyWorkerStatusUI(workerEl);
+      if (opts.save) saveState();
+    }
+
+    function collectWorkers() {
+      return [...board.querySelectorAll('.item[data-type="pracovnik"]')].map(w => ({
+        id: w.dataset.id,
+        name: w.querySelector('.w-name')?.textContent.trim() || '',
+        team: w.querySelector('.team-name')?.textContent.trim() || '',
+        center: w.querySelector('.center-name')?.textContent.trim() || '',
+        active: w.dataset.active === '1',
+        docked: !!w.dataset.dockedTo
+      }));
+    }
+
+    function normalizeNameKey(name) {
+      return (name || '').trim().toLowerCase();
+    }
+    function getWorkerNameAndKey(el) {
+      const name = el.querySelector('.w-name')?.textContent.trim() || '';
+      return { name, key: normalizeNameKey(name) };
+    }
+    function getWorkerItems() {
+      return [...document.querySelectorAll('.item[data-type="pracovnik"]')];
+    }
+    function collectWorkersUniqueByName() {
+      const map = new Map();
+      getWorkerItems().forEach(wEl => {
+        const { name, key } = getWorkerNameAndKey(wEl);
+        if (!key) return;
+        const team = wEl.querySelector('.team-name')?.textContent.trim() || '';
+        if (!map.has(key)) {
+          map.set(key, { key, name, teams: new Set(), anyActive: (wEl.dataset.active === '1') });
+        }
+        const rec = map.get(key);
+        if (team) rec.teams.add(team);
+        if (wEl.dataset.active === '1') rec.anyActive = true;
+      });
+      return Array.from(map.values()).map(r => ({ key: r.key, name: r.name, team: Array.from(r.teams).join(', '), anyActive: r.anyActive }));
+    }
+    function getCentersByWorkerKey() {
+      const map = new Map();
+      getWorkerItems().forEach(wEl => {
+        const { key } = getWorkerNameAndKey(wEl);
+        if (!key) return;
+        const c = wEl.querySelector('.center-name')?.textContent.trim() || '';
+        if (!map.has(key)) map.set(key, new Set());
+        if (c) map.get(key).add(c);
+      });
+      return map;
+    }
+    // NOVÉ: mapovanie tímov podľa pracovníka
+    function getTeamsByWorkerKey() {
+      const map = new Map();
+      getWorkerItems().forEach(wEl => {
+        const { key } = getWorkerNameAndKey(wEl);
+        if (!key) return;
+        const t = wEl.querySelector('.team-name')?.textContent.trim() || '';
+        if (!map.has(key)) map.set(key, new Set());
+        if (t) map.get(key).add(t);
+      });
+      return map;
+    }
+
+    function renderAttendanceContent(el) {
+      const wrap = document.createElement('div');
+      wrap.className = 'card attendance';
+
+      const header = document.createElement('div');
+      header.className = 'header';
+      const title = document.createElement('div');
+      title.className = 'title';
+      title.textContent = 'Dochádzka';
+      const hint = document.createElement('div');
+      hint.style.fontSize = '12px';
+      hint.style.color = '#6b7280';
+      hint.textContent = 'Klikni na Príchod/Odchod';
+      header.appendChild(title);
+      header.appendChild(hint);
+
+      const list = document.createElement('div');
+      list.className = 'list';
+
+      wrap.appendChild(header);
+      wrap.appendChild(list);
+      el.appendChild(wrap);
+
+      buildAttendanceList(el);
+    }
+
+    function buildAttendanceList(attCardEl) {
+      const list = attCardEl.querySelector('.attendance .list');
+      if (!list) return;
+      const data = collectWorkersUniqueByName();
+      list.innerHTML = '';
+      if (!data.length) {
+        const empty = document.createElement('div');
+        empty.textContent = 'Žiadni pracovníci.';
+        empty.style.color = '#6b7280';
+        empty.style.fontSize = '13px';
+        list.appendChild(empty);
+        return;
+      }
+      data.forEach(w => {
+        const row = document.createElement('div');
+        row.className = 'att-row';
+        row.dataset.nameKey = w.key;
+        row.classList.toggle('active', !!w.anyActive);
+        row.classList.toggle('inactive', !w.anyActive);
+
+        const nm = document.createElement('div');
+        nm.className = 'nm';
+        nm.textContent = w.name || '(bez mena)';
+        if (w.team) {
+          const meta = document.createElement('span');
+          meta.className = 'meta';
+          meta.textContent = ` – ${w.team}`;
+          nm.appendChild(meta);
+        }
+
+        const btns = document.createElement('div');
+        btns.className = 'btns';
+        const bIn = document.createElement('button');
+        bIn.type = 'button';
+        bIn.className = 'arrival-btn no-drag';
+        bIn.textContent = 'Príchod';
+        const bOut = document.createElement('button');
+        bOut.type = 'button';
+        bOut.className = 'departure-btn no-drag';
+        bOut.textContent = 'Odchod';
+
+        btns.appendChild(bIn);
+        btns.appendChild(bOut);
+
+        row.appendChild(nm);
+        row.appendChild(btns);
+        list.appendChild(row);
+      });
+
+      applyTrainingComplianceWarnings();
+    }
+
+    function refreshAttendanceCards() {
+      const cards = [...board.querySelectorAll('.item[data-type="dochadzka"]')];
+      cards.forEach(c => buildAttendanceList(c));
+      applyTrainingComplianceWarnings();
+    }
+
+    function createItem({
+      id, x = 20, y = 20, z = null, type = 'generic',
+      machineName, teamName, workerName, workerNote, obsluha, nastavovanie, text,
+      dockedTo, offX = 0, offY = 0, active = 0, bg, reason, centerName
+    }) {
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.dataset.id = id ?? crypto.randomUUID();
+      el.dataset.type = type;
+      el.style.left = x + 'px';
+      el.style.top = y + 'px';
+      el.style.zIndex = z ?? (++zCounter);
+
+      if (type === 'stroj') {
+        renderMachineContent(el, { machineName, teamName, obsluha, nastavovanie });
+        attachColorPicker(el);
+        attachDuplicate(el);
+        attachTrash(el);
+        attachStatus(el);
+        attachPresenceIndicator(el);
+        if (typeof bg === 'string' && bg) {
+          setMachineBg(el, bg);
+        }
+        layerMachines.appendChild(el);
+      } else if (type === 'pracovnik') {
+        renderWorkerContent(el, { workerName, teamName, obsluha, nastavovanie, centerName });
+        if (typeof workerNote === 'string' && workerNote) {
+          const wn = el.querySelector('.w-name');
+          if (wn) wn.dataset.note = workerNote;
+        }
+        attachDuplicate(el);
+        attachTrash(el);
+        if (dockedTo) {
+          el.dataset.dockedTo = dockedTo;
+          el.dataset.offX = String(offX || 0);
+          el.dataset.offY = String(offY || 0);
+        }
+        el.dataset.active = active ? '1' : '0';
+        applyWorkerStatusUI(el);
+
+        layerWorkers.appendChild(el);
+      } else if (type === 'dochadzka') {
+        renderAttendanceContent(el);
+        el.style.display = 'none';
+        layerMachines.appendChild(el);
+      } else if (type === 'odstavenie') {
+        renderDowntimeContent(el, { reason });
+        attachDuplicate(el);
+        attachTrash(el);
+        if (dockedTo) {
+          el.dataset.dockedTo = dockedTo;
+          el.dataset.offX = String(offX || 0);
+          el.dataset.offY = String(offY || 0);
+        }
+        layerWorkers.appendChild(el);
+      } else {
+        el.textContent = text || `Objekt ${(counters.generic = (counters.generic || 0) + 1)}`;
+        attachTrash(el);
+        layerMachines.appendChild(el);
+      }
+
+      el.querySelectorAll('[contenteditable="true"]').forEach(node => {
+        node.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' || (e.key === 'Enter' && !e.shiftKey)) {
+            e.preventDefault();
+            node.blur();
+          }
+        });
+        node.addEventListener('blur', () => {
+          if (node.classList.contains('w-name')) {
+            const prevKey = node.dataset.prevKey || '';
+            const newKey = normalizeNameKey(node.textContent || '');
+            if (prevKey && newKey && prevKey !== newKey) {
+              renameQualKey(prevKey, newKey);
+              renameTrainKey(prevKey, newKey);
+              delete node.dataset.prevKey;
+            }
+          }
+          saveState();
+          updateDockUI();
+          updateTeamButtons();
+          refreshAttendanceCards();
+        });
+      });
+
+      return el;
+    }
+
+    function placeDockedWorker(workerEl) {
+      const machineId = workerEl.dataset.dockedTo;
+      if (!machineId) return;
+      const machineEl = [...board.querySelectorAll('.item[data-type="stroj"]')].find(m => m.dataset.id === machineId);
+      if (!machineEl) {
+        delete workerEl.dataset.dockedTo;
+        delete workerEl.dataset.offX;
+        delete workerEl.dataset.offY;
+        return;
+      }
+      const offX = parseFloat(workerEl.dataset.offX) || 0;
+      const offY = parseFloat(workerEl.dataset.offY) || 0;
+      const mx = parseFloat(machineEl.style.left) || 0;
+      const my = parseFloat(machineEl.style.top) || 0;
+      let nx = mx + offX;
+      let ny = my + offY;
+      nx = clamp(nx, 0, Math.max(0, board.clientWidth - workerEl.offsetWidth));
+      ny = Math.max(0, ny);
+      workerEl.style.left = nx + 'px';
+      workerEl.style.top = ny + 'px';
+    }
+    function placeDockedDowntime(dEl) {
+      const machineId = dEl.dataset.dockedTo;
+      if (!machineId) return;
+      const machineEl = [...board.querySelectorAll('.item[data-type="stroj"]')].find(m => m.dataset.id === machineId);
+      if (!machineEl) {
+        delete dEl.dataset.dockedTo;
+        delete dEl.dataset.offX;
+        delete dEl.dataset.offY;
+        return;
+      }
+      const offX = parseFloat(dEl.dataset.offX) || 0;
+      const offY = parseFloat(dEl.dataset.offY) || 0;
+      const mx = parseFloat(machineEl.style.left) || 0;
+      const my = parseFloat(machineEl.style.top) || 0;
+      let nx = mx + offX;
+      let ny = my + offY;
+      nx = clamp(nx, 0, Math.max(0, board.clientWidth - dEl.offsetWidth));
+      ny = Math.max(0, ny);
+      dEl.style.left = nx + 'px';
+      dEl.style.top = ny + 'px';
+    }
+    function placeAllDockedWorkers() {
+      const workers = [...board.querySelectorAll('.item[data-type="pracovnik"][data-docked-to]')];
+      workers.forEach(placeDockedWorker);
+    }
+    function placeAllDockedDowntimes() {
+      const ds = [...board.querySelectorAll('.item[data-type="odstavenie"][data-docked-to]')];
+      ds.forEach(placeDockedDowntime);
+    }
+
+    function isPairAlignedOk(workerEl, machineEl) {
+      const rows = ['obsluha', 'nastavovanie'];
+      for (const row of rows) {
+        const m = [...machineEl.querySelectorAll(`.row[data-row="${row}"] .dot`)].map(getDotState);
+        const w = [...workerEl.querySelectorAll(`.row[data-row="${row}"] .dot`)].map(getDotState);
+        for (let i = 0; i < Math.min(m.length, w.length); i++) {
+          if (m[i] === 0 && w[i] !== 0) return false;
+        }
+      }
+      return true;
+    }
+
+    function updateDockUI() {
+      const machines = [...board.querySelectorAll('.item[data-type="stroj"]')];
+      const workers = [...board.querySelectorAll('.item[data-type="pracovnik"]')];
+      const downtimes = [...board.querySelectorAll('.item[data-type="odstavenie"]')];
+
+      const machineToWorkers = new Map(machines.map(m => [m.dataset.id, []]));
+      workers.forEach(w => {
+        const mid = w.dataset.dockedTo;
+        const trash = w.querySelector('.trash-btn');
+        const dup = w.querySelector('.duplicate-btn');
+        const publish = w.querySelector('.market-publish-btn');
+
+        if (mid && machineToWorkers.has(mid)) {
+          machineToWorkers.get(mid).push(w);
+          if (trash) trash.style.display = 'none';
+          if (dup) dup.style.display = 'none';
+          if (publish) publish.style.display = 'none';
+        } else {
+          if (trash) trash.style.display = '';
+          if (dup) dup.style.display = '';
+          if (publish) publish.style.display = '';
+        }
+
+        const teamEl = w.querySelector('.team-name');
+        const centerEl = w.querySelector('.center-name');
+        if (teamEl) teamEl.classList.toggle('hide-when-docked', !!mid);
+        if (centerEl) centerEl.classList.toggle('hide-when-docked', !!mid);
+
+        applyWorkerStatusUI(w);
+      });
+
+      const machineToDowntimes = new Map(machines.map(m => [m.dataset.id, []]));
+      downtimes.forEach(d => {
+        const mid = d.dataset.dockedTo;
+        const trash = d.querySelector('.trash-btn');
+        const dup = d.querySelector('.duplicate-btn');
+        if (mid && machineToDowntimes.has(mid)) {
+          machineToDowntimes.get(mid).push(d);
+          if (trash) trash.style.display = 'none';
+          if (dup) dup.style.display = 'none';
+        } else {
+          if (trash) trash.style.display = '';
+          if (dup) dup.style.display = '';
+        }
+      });
+
+      for (const m of machines) {
+        const tname = m.querySelector('.t-name');
+        const badge = m.querySelector('.status-badge');
+        const trash = m.querySelector('.trash-btn');
+        const dup = m.querySelector('.duplicate-btn');
+        const pretyp = m.querySelector('.pretypovanie-badge');
+        const colorBtn = m.querySelector('.color-btn');
+        const metersEl = m.querySelector('.meters');
+        const presence = m.querySelector('.presence-indicator');
+
+        const ws = machineToWorkers.get(m.dataset.id) || [];
+        const ds = machineToDowntimes.get(m.dataset.id) || [];
+
+        const hasWorkers = ws.length > 0;
+        const hasDowntime = ds.length > 0;
+
+        const nastDots = [...m.querySelectorAll('.row[data-row="nastavovanie"] .dot')];
+        const hasGreenInNast = nastDots.some(d => getDotState(d) === 0);
+        const pretypActive = hasGreenInNast;
+
+        m.classList.toggle('has-worker', hasWorkers);
+        m.classList.toggle('pretyp-on', hasWorkers && pretypActive);
+        m.classList.toggle('pretyp-off', hasWorkers && !pretypActive);
+        m.classList.toggle('has-downtime', hasDowntime);
+
+        if (presence) {
+          if (hasWorkers) {
+            const anyActive = ws.some(w => w.dataset.active === '1');
+            presence.textContent = anyActive ? 'Pracovník prítomný' : 'Pracovník neprítomný';
+            presence.classList.toggle('present', anyActive);
+            presence.classList.toggle('absent', !anyActive);
+            presence.style.display = 'inline-flex';
+          } else {
+            presence.style.display = 'none';
+            presence.classList.remove('present', 'absent');
+          }
+        }
+
+        if (!hasWorkers && !hasDowntime) {
+          m.classList.remove('alarm-bad');
+          if (tname) tname.classList.remove('hide-when-docked');
+          if (badge) badge.style.display = 'none';
+          if (trash) trash.style.display = '';
+          if (dup) dup.style.display = '';
+          if (colorBtn) colorBtn.style.display = '';
+          if (pretyp) pretyp.style.display = pretypActive ? 'inline-flex' : 'none';
+          if (metersEl) metersEl.style.display = '';
+        } else {
+          if (tname) tname.classList.toggle('hide-when-docked', hasWorkers);
+          if (metersEl) metersEl.style.display = hasDowntime ? 'none' : '';
+          if (trash) trash.style.display = 'none';
+          if (dup) dup.style.display = 'none';
+          if (colorBtn) colorBtn.style.display = 'none';
+          if (badge) {
+            if (hasWorkers) {
+              const allOk = ws.every(w => isPairAlignedOk(w, m));
+              m.classList.toggle('alarm-bad', hasWorkers && !allOk);
+
+              badge.classList.remove('ok', 'bad');
+              if (allOk) { badge.classList.add('ok'); badge.textContent = 'OK'; }
+              else { badge.classList.add('bad'); badge.textContent = '!'; }
+              badge.style.display = 'inline-flex';
+            } else {
+              m.classList.remove('alarm-bad');
+              badge.style.display = 'none';
+            }
+          }
+          if (pretyp) pretyp.style.display = 'none';
+        }
+      }
+
+      updateUndockedCardsVisibility();
+      applyTrainingComplianceWarnings();
+      applyWorkerFilters();
+    }
+
+    function rebuildDotsForItem(el) {
+      const owner = el.dataset.type === 'stroj' ? 'machine'
+                  : el.dataset.type === 'pracovnik' ? 'worker' : null;
+      if (!owner) return;
+
+      const defaultState = (owner === 'machine') ? 1 : 0;
+
+      ['obsluha', 'nastavovanie'].forEach(rowName => {
+        const existingDots = [...el.querySelectorAll(`.${owner} .row[data-row="${rowName}"] .dot`)];
+        const current = existingDots.map(d => ({ state: Math.min(1, getDotState(d)), note: d.dataset.note || "" }));
+        let nextArr = current.slice(0, DOTS_PER_ROW);
+
+        while (nextArr.length < DOTS_PER_ROW) nextArr.push({ state: defaultState, note: "" });
+
+        const oldRow = el.querySelector(`.${owner} .row[data-row="${rowName}"]`);
+        if (oldRow) {
+          const newRow = createDotsRow(rowName, nextArr, 2, owner);
+          oldRow.replaceWith(newRow);
+        }
+      });
+    }
+    function setDotsPerRow(n) {
+      DOTS_PER_ROW = n;
+      saveSettingsObj({ dotsPerRow: DOTS_PER_ROW });
+      applyDotsLayoutVars();
+      [...board.querySelectorAll('.item[data-type="stroj"], .item[data-type="pracovnik"]')].forEach(el => rebuildDotsForItem(el));
+      saveState();
+      updateDockUI();
+    }
+
+    board.addEventListener('pointerdown', (e) => {
+      const el = e.target.closest('.item');
+      if (!el) return;
+      if (e.target.closest('.no-drag') || (e.target instanceof HTMLElement && e.target.isContentEditable)) return;
+      el.setPointerCapture?.(e.pointerId);
+      el.style.zIndex = ++zCounter;
+      const startX = e.clientX, startY = e.clientY;
+      const origX = parseFloat(el.style.left) || 0;
+      const origY = parseFloat(el.style.top) || 0;
+      drag = { el, startX, startY, origX, origY, wasDragging: false };
+    });
+
+    window.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      drag.wasDragging = true;
+      const { el, startX, startY, origX, origY } = drag;
+      const dx = (e.clientX - startX) / (ZOOM || 1);
+      const dy = (e.clientY - startY) / (ZOOM || 1);
+      let nx = origX + dx, ny = origY + dy;
+      if (el.dataset.type === 'stroj') { nx = snap(nx); ny = snap(ny); }
+      nx = clamp(nx, 0, Math.max(0, board.clientWidth - el.offsetWidth));
+      ny = Math.max(0, ny);
+      el.style.left = nx + 'px';
+      el.style.top = ny + 'px';
+
+      if (el.dataset.type === 'stroj') {
+        const mid = el.dataset.id;
+        const dockedWorkers = [...board.querySelectorAll(`.item[data-type="pracovnik"][data-docked-to="${mid}"]`)];
+        dockedWorkers.forEach(w => {
+          const offX = parseFloat(w.dataset.offX) || 0;
+          const offY = parseFloat(w.dataset.offY) || 0;
+          w.style.left = (nx + offX) + 'px';
+          w.style.top = (ny + offY) + 'px';
+        });
+        const dockedDowns = [...board.querySelectorAll(`.item[data-type="odstavenie"][data-docked-to="${mid}"]`)];
+        dockedDowns.forEach(d => {
+          const offX = parseFloat(d.dataset.offX) || 0;
+          const offY = parseFloat(d.dataset.offY) || 0;
+          d.style.left = (nx + offX) + 'px';
+          d.style.top = (ny + offY) + 'px';
+        });
+      }
+    });
+
+    window.addEventListener('pointerup', () => {
+      if (!drag) return;
+      const el = drag.el;
+
+      if (el.dataset.type === 'pracovnik' || el.dataset.type === 'odstavenie') {
+        const machines = [...board.querySelectorAll('.item[data-type="stroj"]')];
+        let target = null;
+        for (const m of machines) { if (isItemDockedToMachine(el, m)) { target = m; break; } }
+        if (target) {
+          if (el.dataset.type === 'pracovnik') {
+            const workersOnTarget = [...board.querySelectorAll('.item[data-type="pracovnik"][data-docked-to="' + target.dataset.id + '"]')];
+            if (workersOnTarget.length >= 1 && !workersOnTarget.some(w => w.dataset.id === el.dataset.id)) {
+              alert('Na tento stroj môže byť priložený len jeden pracovník.');
+              delete el.dataset.dockedTo;
+              delete el.dataset.offX;
+              delete el.dataset.offY;
+            } else {
+              centerItemOverMachine(el, target);
+              const mx = parseFloat(target.style.left) || 0;
+              const my = parseFloat(target.style.top) || 0;
+              const wx = parseFloat(el.style.left) || 0;
+              const wy = parseFloat(el.style.top) || 0;
+              el.dataset.dockedTo = target.dataset.id;
+              el.dataset.offX = String(wx - mx);
+              el.dataset.offY = String(wy - my);
+            }
+          } else {
+            centerItemOverMachine(el, target);
+            const mx = parseFloat(target.style.left) || 0;
+            const my = parseFloat(target.style.top) || 0;
+            const wx = parseFloat(el.style.left) || 0;
+            const wy = parseFloat(el.style.top) || 0;
+            el.dataset.dockedTo = target.dataset.id;
+            el.dataset.offX = String(wx - mx);
+            el.dataset.offY = String(wy - my);
+          }
+        } else {
+          delete el.dataset.dockedTo;
+          delete el.dataset.offX;
+          delete el.dataset.offY;
+        }
+      }
+
+      drag = null;
+      saveState();
+      updateDockUI();
+      updateTeamButtons();
+      refreshAttendanceCards();
+    });
+
+    board.addEventListener('click', (e) => {
+      const arrBtn = e.target.closest('.arrival-btn');
+      if (arrBtn) {
+        const row = arrBtn.closest('.att-row');
+        const nameKey = row?.dataset.nameKey || '';
+        if (nameKey) {
+          const items = getWorkerItems().filter(el => normalizeNameKey(el.querySelector('.w-name')?.textContent || '') === nameKey);
+          items.forEach(workerEl => setWorkerActive(workerEl, 1));
+          refreshAttendanceCards();
+          updateDockUI();
+        }
+        e.stopPropagation();
+        return;
+      }
+      const depBtn = e.target.closest('.departure-btn');
+      if (depBtn) {
+        const row = depBtn.closest('.att-row');
+        const nameKey = row?.dataset.nameKey || '';
+        if (nameKey) {
+          const items = getWorkerItems().filter(el => normalizeNameKey(el.querySelector('.w-name')?.textContent || '') === nameKey);
+          items.forEach(workerEl => setWorkerActive(workerEl, 0));
+          refreshAttendanceCards();
+          updateDockUI();
+        }
+        e.stopPropagation();
+        return;
+      }
+
+      const dup = e.target.closest('.duplicate-btn');
+      if (dup) {
+        const item = dup.closest('.item');
+        if (item) {
+          const type = item.dataset.type;
+          const data = { id: undefined, type, x: (parseFloat(item.style.left) || 0) + 32, y: (parseFloat(item.style.top) || 0) + 32, z: null };
+          if (type === 'stroj') {
+            data.machineName = item.querySelector('.m-name')?.textContent ?? '';
+            data.teamName = item.querySelector('.t-name')?.textContent ?? '';
+            data.obsluha = [...item.querySelectorAll('.machine .row[data-row="obsluha"] .dot')].map(v => ({ state: Math.min(1, getDotState(v)), note: v.dataset.note || "" }));
+            data.nastavovanie = [...item.querySelectorAll('.machine .row[data-row="nastavovanie"] .dot')].map(v => ({ state: Math.min(1, getDotState(v)), note: v.dataset.note || "" }));
+            if (item.dataset.bg) data.bg = item.dataset.bg;
+          } else if (type === 'pracovnik') {
+            data.workerName = item.querySelector('.w-name')?.textContent ?? '';
+            data.teamName = item.querySelector('.team-name')?.textContent ?? '';
+            data.centerName = item.querySelector('.center-name')?.textContent ?? '';
+            data.workerNote = item.querySelector('.w-name')?.dataset.note || "";
+            data.obsluha = [...item.querySelectorAll('.worker .row[data-row="obsluha"] .dot')].map(v => ({ state: Math.min(1, getDotState(v)), note: v.dataset.note || "" }));
+            data.nastavovanie = [...item.querySelectorAll('.worker .row[data-row="nastavovanie"] .dot')].map(v => ({ state: Math.min(1, getDotState(v)), note: v.dataset.note || "" }));
+            data.active = item.dataset.active === '1' ? 1 : 0;
+          } else if (type === 'odstavenie') {
+            data.reason = item.querySelector('.downtime select')?.value || 'planned';
+          } else if (type === 'dochadzka') {
+          } else {
+            data.text = item.innerText || '';
+          }
+          createItem(data);
+          saveState();
+          updateDockUI();
+          updateTeamButtons();
+          refreshAttendanceCards();
+        }
+        e.stopPropagation();
+        return;
+      }
+
+      const trash = e.target.closest('.trash-btn');
+      if (trash) {
+        const item = trash.closest('.item');
+        if (item) {
+          if (item.dataset.type === 'dochadzka') {
+            e.stopPropagation();
+            return;
+          }
+          if (item.dataset.type === 'stroj') {
+            const mid = item.dataset.id;
+            [...board.querySelectorAll(`.item[data-type="pracovnik"][data-docked-to="${mid}"]`)].forEach(w => {
+              delete w.dataset.dockedTo; delete w.dataset.offX; delete w.dataset.offY;
+            });
+            [...board.querySelectorAll(`.item[data-type="odstavenie"][data-docked-to="${mid}"]`)].forEach(d => {
+              delete d.dataset.dockedTo; delete d.dataset.offX; delete d.dataset.offY;
+            });
+          }
+          item.remove();
+          saveState();
+          updateDockUI();
+          updateTeamButtons();
+          refreshAttendanceCards();
+        }
+        e.stopPropagation();
+        return;
+      }
+    });
+
+    board.addEventListener('dblclick', (e) => {
+      if (e.button !== 0) return;
+      const dot = e.target.closest('.dot');
+      if (!dot) return;
+      const ownerItem = dot.closest('.item');
+      if (ownerItem?.dataset.type === 'pracovnik') {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+      e.preventDefault();
+      e.stopPropagation();
+      const next = (getDotState(dot) + 1) % 2;
+      setDotState(dot, next);
+      saveState();
+      updateDockUI();
+      updateTeamButtons();
+    });
+
+    function addItemOfType(type) {
+      const makeStates = (val) => Array.from({ length: DOTS_PER_ROW }, () => ({ state: val }));
+
+      if (type === 'stroj') {
+        const el = createItem({
+          type: 'stroj',
+          x: snap(24 + Math.round(Math.random() * 60)),
+          y: snap(24 + Math.round(Math.random() * 60)),
+          machineName: null, teamName: null,
+          obsluha: makeStates(1),
+          nastavovanie: makeStates(1)
+        });
+        saveState(); updateDockUI(); updateTeamButtons();
+        el.animate([{ transform: 'scale(0.98)' }, { transform: 'scale(1)' }], { duration: 150 });
+      } else if (type === 'pracovnik') {
+        const el = createItem({
+          type: 'pracovnik',
+          x: 24 + Math.round(Math.random() * 60),
+          y: 24 + Math.round(Math.random() * 60),
+          workerName: null, teamName: null, centerName: '',
+          obsluha: makeStates(1),
+          nastavovanie: makeStates(1)
+        });
+        saveState(); updateDockUI(); updateTeamButtons();
+        el.animate([{ transform: 'scale(0.98)' }, { transform: 'scale(1)' }], { duration: 150 });
+      } else if (type === 'odstavenie') {
+        const el = createItem({
+          type: 'odstavenie',
+          x: 24 + Math.round(Math.random() * 60),
+          y: 24 + Math.round(Math.random() * 60),
+          reason: 'planned'
+        });
+        saveState(); updateDockUI();
+        el.animate([{ transform: 'scale(0.98)' }, { transform: 'scale(1)' }], { duration: 150 });
+      }
+    }
+
+    function ensureAttendanceCard() {
+      let card = board.querySelector('.item[data-type="dochadzka"]');
+      if (!card) {
+        card = createItem({ type: 'dochadzka', x: snap(24 + Math.round(Math.random() * 60)), y: snap(24 + Math.round(Math.random() * 60)) });
+        saveState();
+        refreshAttendanceCards();
+      }
+      return card;
+    }
+
+    function toggleAttendanceCard() {
+      const card = board.querySelector('.item[data-type="dochadzka"]');
+      if (!card) {
+        const c = ensureAttendanceCard();
+        c.style.display = '';
+        c.animate([{ transform: 'scale(0.98)' }, { transform: 'scale(1)' }], { duration: 150 });
+      } else {
+        const visible = card.style.display !== 'none';
+        card.style.display = visible ? 'none' : '';
+        if (!visible) {
+          refreshAttendanceCards();
+          card.animate([{ transform: 'scale(0.98)' }, { transform: 'scale(1)' }], { duration: 150 });
+        }
+        saveState();
+      }
+    }
+
+    function setZoom(z) { ZOOM = clamp(Math.round(z * 100) / 100, ZOOM_MIN, ZOOM_MAX); applyZoom(); }
+    zoomInBtn.addEventListener('click', () => setZoom(ZOOM + ZOOM_STEP));
+    zoomOutBtn.addEventListener('click', () => setZoom(ZOOM - ZOOM_STEP));
+    window.addEventListener('keydown', (e) => {
+      const key = e.key;
+      if (e.ctrlKey || e.metaKey) {
+        if (key === '+' || key === '=' ) { e.preventDefault(); setZoom(ZOOM + ZOOM_STEP); }
+        if (key === '-' || key === '_') { e.preventDefault(); setZoom(ZOOM - ZOOM_STEP); }
+        if (key.toLowerCase() === '0') { e.preventDefault(); setZoom(1); }
+      }
+    });
+
+    clearBtn.addEventListener('click', () => {
+      if (!confirm('Naozaj vymazať uložené rozloženie?')) return;
+      localStorage.removeItem(STORAGE_KEY);
+      clearBoardUI();
+      updateDockUI();
+      updateTeamButtons();
+      refreshAttendanceCards();
+    });
+
+    function clampMachinesIntoBoard() {
+      const machines = [...board.querySelectorAll('.item[data-type="stroj"]')];
+      machines.forEach(m => {
+        const x = parseFloat(m.style.left) || 0;
+        const y = parseFloat(m.style.top) || 0;
+        const nx = clamp(x, 0, Math.max(0, board.clientWidth - m.offsetWidth));
+        const ny = Math.max(0, y);
+        if (nx !== x || ny !== y) {
+          m.style.left = snap(nx) + 'px';
+          m.style.top = snap(ny) + 'px';
+        }
+      });
+    }
+    window.addEventListener('resize', () => {
+      clampMachinesIntoBoard();
+      placeAllDockedWorkers();
+      placeAllDockedDowntimes();
+      updateDockUI();
+      updateTeamButtons();
+      refreshAttendanceCards();
+      saveState();
+    });
+
+    // Filter pracovníkov na ploche podľa tímu
+    function applyWorkerFilters() {
+      const workers = document.querySelectorAll('.item[data-type="pracovnik"]');
+      workers.forEach(item => {
+        const team = item.querySelector('.team-name')?.textContent.trim() || '';
+        const teamOk = !currentTeamFilter || team === currentTeamFilter;
+        item.style.opacity = teamOk ? '1' : '0.2';
+      });
+    }
+
+    function updateTeamButtons() {
+      const teamBtnDiv = document.getElementById('team-buttons');
+      if (!teamBtnDiv) return;
+      const teamNames = Array.from(document.querySelectorAll('.item[data-type="pracovnik"] .team-name'))
+        .map(el => el.textContent.trim()).filter(Boolean);
+      const uniqueTeams = [...new Set(teamNames)];
+      teamBtnDiv.innerHTML = '';
+      uniqueTeams.forEach(team => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'team-filter-btn';
+        btn.textContent = team;
+        btn.style = 'background:#e0e7ff;color:#1e40af;border:1px solid #94a3b8;padding:6px 14px;border-radius:8px;font-size:14px;cursor:pointer;margin-bottom:2px';
+        if (currentTeamFilter === team) btn.classList.add('active');
+        btn.addEventListener('click', () => {
+          const alreadyActive = currentTeamFilter === team;
+          currentTeamFilter = alreadyActive ? null : team;
+          teamBtnDiv.querySelectorAll('.team-filter-btn').forEach(b => b.classList.remove('active'));
+          if (!alreadyActive) btn.classList.add('active');
+          applyWorkerFilters();
+        });
+        teamBtnDiv.appendChild(btn);
+      });
+    }
+
+    // Kontextové menu poznámok
+    board.addEventListener("contextmenu", (e) => {
+      const dot = e.target.closest(".dot");
+      const wname = e.target.closest(".w-name");
+      if (!dot && !wname) return;
+      e.preventDefault();
+
+      if (dot) {
+        const current = dot.dataset.note || "";
+        const text = prompt("Zadajte poznámku k tejto pozícii (nepovinné):", current);
+        if (text !== null) {
+          if (text.trim()) dot.dataset.note = text.trim();
+          else delete dot.dataset.note;
+          saveState();
+          updateDockUI();
+          updateTeamButtons();
+        }
+        return;
+      }
+
+      if (wname) {
+        const current = wname.dataset.note || "";
+        const text = prompt("Zadajte poznámku k menu pracovníka (nepovinné):", current);
+        if (text !== null) {
+          if (text.trim()) wname.dataset.note = text.trim();
+          else delete wname.dataset.note;
+          saveState();
+          updateDockUI();
+          updateTeamButtons();
+        }
+        return;
+      }
+    });
+
+    saveBoardBtn.addEventListener('click', saveBoardFlow);
+    savedListBtn.addEventListener('click', () => toggleSavedMenu());
+    addMachineBtn.addEventListener('click', () => addItemOfType('stroj'));
+    addWorkerBtn.addEventListener('click', () => addItemOfType('pracovnik'));
+    addDowntimeBtn.addEventListener('click', () => addItemOfType('odstavenie'));
+    toggleAttendanceBtn?.addEventListener('click', toggleAttendanceCard);
+
+    function exportAllToFile() {
+      const payload = {
+        items: getItemsSnapshot(),
+        settings: loadSettingsObj(),
+        savedBoards: loadSavedBoards(),
+        qualMatrix: loadQualMatrix(),
+        trainMatrix: loadTrainMatrix()
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'board-export.json';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    }
+
+    async function importAllFromFile(file) {
+      try {
+        const text = await file.text();
+        const data = JSON.parse(text);
+
+        if (data.settings && typeof data.settings === 'object') {
+          saveSettingsObj(data.settings);
+        }
+        if (Array.isArray(data.savedBoards)) {
+          saveSavedBoards(data.savedBoards);
+          renderSavedMenu();
+        }
+        if (Array.isArray(data.items)) {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(data.items));
+        }
+        if (data.qualMatrix && typeof data.qualMatrix === 'object') {
+          if (!('obsluha' in data.qualMatrix) && !('nastavovanie' in data.qualMatrix)) {
+            saveQualMatrix({ obsluha: data.qualMatrix || {}, nastavovanie: {} });
+          } else {
+            saveQualMatrix(data.qualMatrix);
+          }
+        }
+        if (data.trainMatrix && typeof data.trainMatrix === 'object') {
+          saveTrainMatrix(data.trainMatrix);
+        }
+
+        clearBoardUI();
+        const items = Array.isArray(data.items) ? data.items : [];
+        let maxZ = 1;
+        items.forEach(d => {
+          const el = createItem(d);
+          const z = parseInt(el.style.zIndex || '1', 10);
+          if (z > maxZ) maxZ = z;
+        });
+        zCounter = maxZ;
+
+        const s = loadSettingsObj();
+        if (typeof s.dotsPerRow === 'number') {
+          DOTS_PER_ROW = s.dotsPerRow;
+          applyDotsLayoutVars();
+        }
+        if (typeof s.zoom === 'number') { ZOOM = clamp(s.zoom, ZOOM_MIN, ZOOM_MAX); applyZoom(); }
+        if (typeof s.toolbarHidden === 'boolean') {
+          applyToolbarHidden(s.toolbarHidden, { save: false });
+        }
+
+        placeAllDockedWorkers();
+        placeAllDockedDowntimes();
+        updateDockUI();
+        updateTeamButtons();
+        refreshAttendanceCards();
+
+        migrateQualMatrixToNameKeys();
+        migrateTrainMatrixToNameKeys();
+        applyTrainingComplianceWarnings();
+
+        saveState();
+
+        alert('Import hotový.');
+      } catch (err) {
+        console.error(err);
+        alert('Import zlyhal: neplatný JSON.');
+      }
+    }
+
+    function sanitizeQualMatrixShape(m) {
+      if (!m || typeof m !== 'object') return { obsluha: {}, nastavovanie: {} };
+      if (!('obsluha' in m) && !('nastavovanie' in m)) {
+        return { obsluha: m || {}, nastavovanie: {} };
+      }
+      return { obsluha: m.obsluha || {}, nastavovanie: m.nastavovanie || {} };
+    }
+    // UPRAVENÉ: train shape aj so scopes
+    function sanitizeTrainMatrixShape(m) {
+      if (!m || typeof m !== 'object') return { trainings: [], map: {}, scopes: {} };
+      return {
+        trainings: Array.isArray(m.trainings) ? m.trainings : [],
+        map: (m.map && typeof m.map === 'object') ? m.map : {},
+        scopes: (m.scopes && typeof m.scopes === 'object') ? m.scopes : {}
+      };
+    }
+    function mergeSavedBoardsIntoLocal(incomingBoards, sourceLabel = '') {
+      if (!Array.isArray(incomingBoards) || !incomingBoards.length) return 0;
+      const local = loadSavedBoards();
+      const ids = new Set(local.map(b => b.id));
+      let added = 0;
+      incomingBoards.forEach(rec => {
+        const copy = JSON.parse(JSON.stringify(rec || {}));
+        if (!copy || typeof copy !== 'object') return;
+        if (!copy.id) copy.id = crypto.randomUUID();
+        if (ids.has(copy.id)) copy.id = crypto.randomUUID();
+        if (!copy.name || !copy.name.trim()) {
+          copy.name = sourceLabel ? `Import – ${sourceLabel}` : `Import – tabuľa`;
+        }
+        copy.savedAt = Date.now();
+        local.push(copy);
+        ids.add(copy.id);
+        added++;
+      });
+      saveSavedBoards(local);
+      return added;
+    }
+    function fileNameToBoardName(fileName) {
+      return (fileName || 'Import').replace(/\.[^.]+$/, '');
+    }
+    function mergeQualMatrixIntoLocal(incoming) {
+      const base = loadQualMatrix();
+      const inc = sanitizeQualMatrixShape(incoming);
+      const out = { obsluha: { ...base.obsluha }, nastavovanie: { ...base.nastavovanie } };
+      const mergeRow = (dst, src) => {
+        Object.entries(src || {}).forEach(([key, arr]) => {
+          const set = new Set(Array.isArray(dst[key]) ? dst[key] : []);
+          (Array.isArray(arr) ? arr : []).forEach(v => set.add(v));
+          dst[key] = Array.from(set);
+        });
+      };
+      mergeRow(out.obsluha, inc.obsluha);
+      mergeRow(out.nastavovanie, inc.nastavovanie);
+      saveQualMatrix(out);
+      return out;
+    }
+    // UPRAVENÉ: merge tréningov so scopes
+    function mergeTrainMatrixIntoLocal(incoming) {
+      const base = loadTrainMatrix();
+      const inc = sanitizeTrainMatrixShape(incoming);
+      const trainingsSet = new Set(base.trainings);
+      inc.trainings.forEach(t => trainingsSet.add(t));
+      const out = {
+        trainings: Array.from(trainingsSet),
+        map: { ...base.map },
+        scopes: { ...(base.scopes || {}) }
+      };
+      Object.entries(inc.map || {}).forEach(([key, arr]) => {
+        const set = new Set(Array.isArray(out.map[key]) ? out.map[key] : []);
+        (Array.isArray(arr) ? arr : []).forEach(v => set.add(v));
+        out.map[key] = Array.from(set);
+      });
+      // merge scopes
+      const mergeScopeSets = (dst, src) => {
+        const out = { centers: new Set(dst?.centers || []), teams: new Set(dst?.teams || []) };
+        (src?.centers || []).forEach(c => out.centers.add(c));
+        (src?.teams || []).forEach(t => out.teams.add(t));
+        return { centers: Array.from(out.centers), teams: Array.from(out.teams) };
+      };
+      const srcScopes = inc.scopes || {};
+      Object.keys(srcScopes).forEach(trainName => {
+        out.scopes[trainName] = mergeScopeSets(out.scopes[trainName], srcScopes[trainName]);
+      });
+
+      saveTrainMatrix(out);
+      return out;
+    }
+    async function importAllFromFiles(files) {
+      const list = Array.from(files || []);
+      if (list.length === 0) return;
+
+      if (list.length === 1) {
+        await importAllFromFile(list[0]);
+        return;
+      }
+
+      let totalSavedBoardsAdded = 0;
+      let totalItemsSavedAsBoards = 0;
+      for (const file of list) {
+        try {
+          const text = await file.text();
+          const data = JSON.parse(text);
+
+          if (Array.isArray(data.savedBoards) && data.savedBoards.length) {
+            totalSavedBoardsAdded += mergeSavedBoardsIntoLocal(data.savedBoards, fileNameToBoardName(file.name));
+          }
+
+          if (data.qualMatrix && typeof data.qualMatrix === 'object') {
+            mergeQualMatrixIntoLocal(data.qualMatrix);
+          }
+
+          if (data.trainMatrix && typeof data.trainMatrix === 'object') {
+            mergeTrainMatrixIntoLocal(data.trainMatrix);
+          }
+
+          if (Array.isArray(data.items) && data.items.length && (!data.savedBoards || !data.savedBoards.length)) {
+            const settings = (data.settings && typeof data.settings === 'object') ? data.settings : {};
+            const rec = {
+              id: crypto.randomUUID(),
+              name: `Import – ${fileNameToBoardName(file.name)}`,
+              savedAt: Date.now(),
+              items: data.items,
+              settings
+            };
+            totalSavedBoardsAdded += mergeSavedBoardsIntoLocal([rec], fileNameToBoardName(file.name));
+            totalItemsSavedAsBoards++;
+          }
+
+        } catch (err) {
+          console.warn('Preskočený import súboru (neplatný JSON):', file?.name);
+        }
+      }
+
+      migrateQualMatrixToNameKeys();
+      migrateTrainMatrixToNameKeys();
+      renderSavedMenu();
+      applyTrainingComplianceWarnings();
+
+      alert(`Import hotový.\nSpracované súbory: ${list.length}\nPridané uložené tabuľe: ${totalSavedBoardsAdded}\nZlúčené matice (kvalifikácie/školenia).`);
+    }
+
+    exportBtn?.addEventListener('click', exportAllToFile);
+    importBtn?.addEventListener('click', () => importInput?.click());
+    importInput?.addEventListener('change', async (e) => {
+      const files = Array.from(e.target.files || []);
+      if (files.length) {
+        await importAllFromFiles(files);
+      }
+      e.target.value = '';
+    });
+
+    hideToolbarBtn?.addEventListener('click', () => applyToolbarHidden(true));
+    showToolbarBtn?.addEventListener('click', () => applyToolbarHidden(false));
+
+    function seed() {
+      const demo = [
+        {
+          type: 'stroj',
+          x: snap(40), y: snap(40),
+          machineName: 'Stroj 1',
+          teamName: 'Tím A',
+          obsluha: [{state:0,note:"Lis-01"},{state:1, note:"Lis-02"},{state:0,note:"Lis-03"},{state:1,note:"Lis-04"},{state:0,note:"Lis-05"}],
+          nastavovanie:[{state:1,note:"Lis-01"},{state:0,note:"Lis-02"},{state:1,note:"Lis-03"},{state:0,note:"Lis-04"},{state:1,note:"Lis-05"}]
+        },
+        {
+          type: 'pracovnik',
+          x: 60, y: 10,
+          workerName: 'Ján Novák',
+          teamName: 'Tím B',
+          centerName: 'Stredisko 1',
+          workerNote: 'Poznámka k menu: školenie v piatok',
+          obsluha: [{state:1},{state:1},{state:1},{state:1},{state:1}],
+          nastavovanie:[{state:1},{state:1},{state:1},{state:1},{state:1}],
+          active: 0
+        }
+      ];
+      demo.forEach(d => createItem(d));
+      saveState();
+    }
+const saved = (() => {
+  const raw = localStorage.getItem(STORAGE_KEY);
+  try { return raw ? JSON.parse(raw) : null; } catch { return null; }
+})();
+
+if (saved && Array.isArray(saved) && saved.length) {
+  saved.forEach(d => createItem(d));
+} else {
+  seed();
+}
+
+placeAllDockedWorkers();
+placeAllDockedDowntimes();
+updateDockUI();
+updateTeamButtons();
+renderSavedMenu();
+refreshAttendanceCards();
+
+// --- TU PRIDAME SPUSTENIE KONTROLY ODCHÝLKA OD ŠTANDARDU ---
+setTimeout(() => {
+  migrateTrainMatrixToNameKeys();
+  applyTrainingComplianceWarnings();
+}, 50);
+
+
+
+    // ------- Čítačka kariet -------
+    let scanBuffer = '';
+    let lastScan = 0;
+    const SCAN_END_DELAY = 250;
+
+    window.addEventListener('keydown', function(e) {
+      if (document.activeElement && (
+          document.activeElement.isContentEditable ||
+          document.activeElement.tagName === 'INPUT' ||
+          document.activeElement.tagName === 'TEXTAREA')) {
+        return;
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        if (scanBuffer.length > 0) {
+          processCardIdentifier(scanBuffer.trim());
+          scanBuffer = '';
+          lastScan = 0;
+          e.preventDefault();
+        }
+        return;
+      }
+      if (e.key.length === 1 && (
+          /[0-9A-Za-z]/.test(e.key) ||
+          e.key.charCodeAt(0) > 127)) {
+        scanBuffer += e.key;
+        lastScan = Date.now();
+        setTimeout(() => {
+          if (scanBuffer && Date.now() - lastScan > SCAN_END_DELAY) {
+            processCardIdentifier(scanBuffer.trim());
+            scanBuffer = '';
+          }
+        }, SCAN_END_DELAY + 10);
+      }
+    });
+
+    const rfKeymap = {
+      "ý": "1", "é": "2", "š": "3", "č": "4", "ř": "5",
+      "ž": "6", "á": "8", "í": "9", "+": "", "-": ""
+    };
+    function normalizeScanCode(str) {
+      return str.split('').map(c => rfKeymap[c] ?? c).join('');
+    }
+
+    function getNameKeyFromWorkerEl(workerEl) {
+      return normalizeNameKey(workerEl.querySelector('.w-name')?.textContent || '');
+    }
+
+    function toggleWorkersByNameKey(nameKey) {
+      const items = getWorkerItems().filter(el => getNameKeyFromWorkerEl(el) === nameKey);
+      if (!items.length) return { nextState: null, count: 0 };
+      const anyActive = items.some(el => el.dataset.active === '1');
+      const next = anyActive ? 0 : 1;
+      items.forEach(el => setWorkerActive(el, next, { save: false }));
+      saveState();
+      refreshAttendanceCards();
+      updateDockUI();
+      return { nextState: next, count: items.length };
+    }
+
+    function processCardIdentifier(identifier) {
+      if (!identifier) return;
+      let found = false;
+      const normalizedID = normalizeScanCode(identifier);
+
+      const nameNodes = document.querySelectorAll('.item[data-type="pracovnik"] .w-name');
+      for (const wname of nameNodes) {
+        if (typeof wname.dataset.note === "string" && wname.dataset.note.trim() !== "") {
+          const normalizedNote = normalizeScanCode(wname.dataset.note.trim());
+          if (normalizedID === normalizedNote) {
+            const workerEl = wname.closest('.item[data-type="pracovnik"]');
+            if (workerEl) {
+              const displayName = wname.textContent.trim() || '';
+              const nameKey = getNameKeyFromWorkerEl(workerEl);
+              toggleWorkersByNameKey(nameKey);
+              showScanIndicator(identifier, true, displayName);
+              found = true;
+              break;
+            }
+          }
+        }
+      }
+      if (!found) {
+        showScanIndicator(identifier, false);
+      }
+    }
+
+    function showScanIndicator(identifier, success, workerName='') {
+      if (!scanIndicator) return;
+      scanIndicator.style.display = '';
+      if (success) {
+        scanIndicator.style.background = '#dcfce7';
+        scanIndicator.style.borderColor = '#bbf7d0';
+        scanIndicator.style.color = '#166534';
+        scanIndicator.textContent = `Pracovník: ${workerName}`;
+      } else {
+        scanIndicator.style.background = '#fee2e2';
+        scanIndicator.style.borderColor = '#fecaca';
+        scanIndicator.style.color = '#991b1b';
+        scanIndicator.textContent = `Načítaný kód nebol priradený žiadnemu pracovníkovi!`;
+      }
+      setTimeout(() => { scanIndicator.style.display = 'none'; }, 4000);
+    }
+
+    // ------- Kvalifikačná matica (v2) -------
+    function loadQualMatrix() {
+      try {
+        const raw = localStorage.getItem(QUAL_MATRIX_KEY);
+        if (!raw) return { obsluha: {}, nastavovanie: {} };
+        const obj = JSON.parse(raw);
+        if (!('obsluha' in obj) && !('nastavovanie' in obj)) {
+          return { obsluha: obj || {}, nastavovanie: {} };
+        }
+        return {
+          obsluha: obj.obsluha || {},
+          nastavovanie: obj.nastavovanie || {}
+        };
+      } catch {
+        return { obsluha: {}, nastavovanie: {} };
+      }
+    }
+    function saveQualMatrix(obj) {
+      localStorage.setItem(QUAL_MATRIX_KEY, JSON.stringify({
+        obsluha: obj.obsluha || {},
+        nastavovanie: obj.nastavovanie || {}
+      }));
+    }
+
+    function migrateQualMatrixToNameKeys() {
+      const m = loadQualMatrix();
+      const idsSet = new Set(getWorkerItems().map(el => el.dataset.id));
+      const idToKey = new Map();
+      getWorkerItems().forEach(el => {
+        const { key } = getWorkerNameAndKey(el);
+        idToKey.set(el.dataset.id, key);
+      });
+      const out = { obsluha: {}, nastavovanie: {} };
+      const merge = (dst, key, arr) => {
+        if (!key) return;
+        const set = new Set(dst[key] || []);
+        (arr || []).forEach(x => set.add(x));
+        dst[key] = Array.from(set);
+      };
+
+      for (const [k, arr] of Object.entries(m.obsluha || {})) {
+        const key = idsSet.has(k) ? (idToKey.get(k) || '') : k;
+        merge(out.obsluha, key, arr);
+      }
+      for (const [k, arr] of Object.entries(m.nastavovanie || {})) {
+        const key = idsSet.has(k) ? (idToKey.get(k) || '') : k;
+        merge(out.nastavovanie, key, arr);
+      }
+      saveQualMatrix(out);
+      return out;
+    }
+
+    function collectWorkplacesFromMachinesSeparated() {
+      const setO = new Set();
+      const setN = new Set();
+      document.querySelectorAll('.item[data-type="stroj"] .row[data-row="obsluha"] .dot[data-note]')
+        .forEach(btn => {
+          const raw = (btn.dataset.note || '').trim();
+          const name = raw.split('\n')[0].trim();
+          if (name) setO.add(name);
+        });
+      document.querySelectorAll('.item[data-type="stroj"] .row[data-row="nastavovanie"] .dot[data-note]')
+        .forEach(btn => {
+          const raw = (btn.dataset.note || '').trim();
+          const name = raw.split('\n')[0].trim();
+          if (name) setN.add(name);
+        });
+      return { obsluha: Array.from(setO), nastavovanie: Array.from(setN) };
+    }
+
+    function applyQualificationToWorkersSeparated(workplaces, matrixByRow, { adjustDots = true } = {}) {
+      const lenO = workplaces.obsluha.length;
+      const lenN = workplaces.nastavovanie.length;
+      const targetDots = Math.max(lenO, lenN, 1);
+
+      if (adjustDots && targetDots !== DOTS_PER_ROW) {
+        const ok = confirm(`Počet bodiek sa nastaví na ${targetDots} (max z Obsluha/Nastavovanie). Pokračovať?`);
+        if (!ok) return;
+        setDotsPerRow(targetDots);
+      }
+
+      getWorkerItems().forEach(wEl => {
+        const { key: nameKey } = getWorkerNameAndKey(wEl);
+
+        {
+          const selected = new Set((matrixByRow.obsluha[nameKey] || []));
+          const dots = [...wEl.querySelectorAll(`.worker .row[data-row="obsluha"] .dot`)];
+          for (let i = 0; i < dots.length; i++) {
+            const wp = workplaces.obsluha[i] || '';
+            const btn = dots[i];
+            if (wp) btn.dataset.note = wp; else delete btn.dataset.note;
+            const state = (wp && selected.has(wp)) ? 0 : 1;
+            setDotState(btn, state);
+          }
+        }
+        {
+          const selected = new Set((matrixByRow.nastavovanie[nameKey] || []));
+          const dots = [...wEl.querySelectorAll(`.worker .row[data-row="nastavovanie"] .dot`)];
+          for (let i = 0; i < dots.length; i++) {
+            const wp = workplaces.nastavovanie[i] || '';
+            const btn = dots[i];
+            if (wp) btn.dataset.note = wp; else delete btn.dataset.note;
+            const state = (wp && selected.has(wp)) ? 0 : 1;
+            setDotState(btn, state);
+          }
+        }
+      });
+
+      saveState();
+      updateDockUI();
+      refreshAttendanceCards();
+    }
+
+    let qualModal = null;
+
+    function ensureQualModal() {
+      if (qualModal) return qualModal;
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Kvalifikačná matica">
+          <div class="hd">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <div class="title">Kvalifikačná matica</div>
+              <div id="qual-center-filter" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button type="button" id="qual-refresh" title="Znovu načítať stĺpce podľa strojov">Obnoviť zo strojov</button>
+              <button type="button" id="qual-close">Zavrieť</button>
+            </div>
+          </div>
+          <div class="bd">
+            <div class="hint" style="margin-bottom:8px">
+              Stĺpce sa berú z poznámok na bodkách kariet strojov. Vyber zvlášť pre Obsluhu a zvlášť pre Nastavovanie.
+            </div>
+            <div id="qual-table-wrap"></div>
+          </div>
+          <div class="ft">
+            <button type="button" id="qual-apply" style="background:#22c55e;color:#fff;border-color:#22c55e">Použiť na karty pracovníkov</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) toggleQualModal(false);
+      });
+      overlay.querySelector('#qual-close')?.addEventListener('click', () => toggleQualModal(false));
+      overlay.querySelector('#qual-apply')?.addEventListener('click', () => {
+        const { workplaces, matrix } = readQualTableState();
+        applyQualificationToWorkersSeparated(workplaces, matrix, { adjustDots: true });
+        toggleQualModal(false);
+      });
+      overlay.querySelector('#qual-refresh')?.addEventListener('click', () => buildQualTable());
+      qualModal = overlay;
+      return overlay;
+    }
+
+    function toggleQualModal(open) {
+      ensureQualModal();
+      qualModal.classList.toggle('open', !!open);
+      if (open) {
+        qualCenterFilter = null; // reset filtra pri otvorení
+        buildQualTable();
+      }
+    }
+
+    function buildQualCenterButtons(uniqueCenters) {
+      const bar = qualModal.querySelector('#qual-center-filter');
+      if (!bar) return;
+      bar.innerHTML = '';
+      const centers = Array.from(uniqueCenters);
+      if (!centers.length) {
+        const span = document.createElement('span');
+        span.textContent = 'Stredisko: (žiadne)';
+        span.style.color = '#6b7280';
+        bar.appendChild(span);
+        return;
+      }
+      const label = document.createElement('span');
+      label.textContent = 'Stredisko:';
+      label.style.fontWeight = '700';
+      bar.appendChild(label);
+
+      centers.forEach(cn => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = cn;
+        btn.className = 'center-filter-btn';
+        btn.style.cssText = 'background:#e0e7ff;color:#1e40af;border:1px solid #94a3b8;padding:4px 10px;border-radius:8px;font-size:13px;cursor:pointer';
+        if (qualCenterFilter === cn) {
+          btn.classList.add('active');
+          btn.style.background = '#c7d2fe';
+        }
+        btn.addEventListener('click', () => {
+          const already = qualCenterFilter === cn;
+          qualCenterFilter = already ? null : cn;
+          buildQualTable();
+        });
+        bar.appendChild(btn);
+      });
+      if (qualCenterFilter) {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.textContent = 'Zrušiť filter';
+        clearBtn.style.cssText = 'margin-left:6px;background:#f3f4f6;border:1px solid #d1d5db;padding:4px 10px;border-radius:8px;cursor:pointer';
+        clearBtn.addEventListener('click', () => { qualCenterFilter = null; buildQualTable(); });
+        bar.appendChild(clearBtn);
+      }
+    }
+
+    function buildQualTable() {
+      migrateQualMatrixToNameKeys();
+
+      const wrap = qualModal.querySelector('#qual-table-wrap');
+      if (!wrap) return;
+
+      const workplaces = collectWorkplacesFromMachinesSeparated();
+      const matrix = loadQualMatrix();
+      let workers = collectWorkersUniqueByName().slice().sort((a,b) => (a.name || '').localeCompare((b.name || ''), 'sk'));
+
+      // Priprav strediská
+      const centersByKey = getCentersByWorkerKey();
+      const uniqueCenters = new Set();
+      centersByKey.forEach(set => set.forEach(c => uniqueCenters.add(c)));
+      buildQualCenterButtons(uniqueCenters);
+
+      // Filter podľa zvoleného strediska
+      if (qualCenterFilter) {
+        workers = workers.filter(w => {
+          const cs = centersByKey.get(w.key);
+          return cs && cs.has(qualCenterFilter);
+        });
+      }
+
+      const hasO = workplaces.obsluha.length > 0;
+      const hasN = workplaces.nastavovanie.length > 0;
+
+      const tbl = document.createElement('table');
+      tbl.className = 'tbl';
+
+      const thead = document.createElement('thead');
+
+      const trGrp = document.createElement('tr');
+      const thNameGrp = document.createElement('th');
+      thNameGrp.className = 'sticky grp name';
+      thNameGrp.textContent = 'Pracovník';
+      thNameGrp.rowSpan = 2;
+      trGrp.appendChild(thNameGrp);
+
+      if (hasO) {
+        const thO = document.createElement('th');
+        thO.className = 'sticky grp';
+        thO.colSpan = workplaces.obsluha.length;
+        thO.textContent = 'Obsluha';
+        trGrp.appendChild(thO);
+      }
+      if (hasN) {
+        const thN = document.createElement('th');
+        thN.className = 'sticky grp';
+        thN.colSpan = workplaces.nastavovanie.length;
+        thN.textContent = 'Nastavovanie';
+        trGrp.appendChild(thN);
+      }
+      thead.appendChild(trGrp);
+
+      const trNames = document.createElement('tr');
+      if (hasO) {
+        workplaces.obsluha.forEach(wp => {
+          const th = document.createElement('th');
+          th.className = 'sticky';
+          th.textContent = wp;
+          trNames.appendChild(th);
+        });
+      }
+      if (hasN) {
+        workplaces.nastavovanie.forEach(wp => {
+          const th = document.createElement('th');
+          th.className = 'sticky';
+          th.textContent = wp;
+          trNames.appendChild(th);
+        });
+      }
+      thead.appendChild(trNames);
+      tbl.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+
+      if (!workers.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 1 + workplaces.obsluha.length + workplaces.nastavovanie.length;
+        td.style.textAlign = 'center';
+        td.style.color = '#6b7280';
+        td.textContent = qualCenterFilter ? 'Žiadni pracovníci pre zvolené stredisko.' : 'Žiadni pracovníci.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else if (!hasO && !hasN) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 1;
+        td.style.textAlign = 'left';
+        td.innerHTML = 'Nenašli sa žiadne pracoviská. Pridaj poznámky k bodkám na kartách strojov (Obsluha/Nastavovanie).';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else {
+        workers.forEach(w => {
+          const tr = document.createElement('tr');
+          const tdName = document.createElement('td');
+          tdName.className = 'name';
+          tdName.textContent = w.name || '(bez mena)';
+          if (w.team) {
+            const small = document.createElement('span');
+            small.style.color = '#6b7280';
+            small.style.marginLeft = '6px';
+            small.textContent = `– ${w.team}`;
+            tdName.appendChild(small);
+          }
+          const cSet = centersByKey.get(w.key);
+          if (cSet && cSet.size) {
+            const small2 = document.createElement('span');
+            small2.style.color = '#6b7280';
+            small2.style.marginLeft = '6px';
+            small2.textContent = `– ${Array.from(cSet).join(', ')}`;
+            tdName.appendChild(small2);
+          }
+          tr.appendChild(tdName);
+
+          if (hasO) {
+            const selectedO = new Set(matrix.obsluha[w.key] || []);
+            workplaces.obsluha.forEach(wp => {
+              const td = document.createElement('td');
+              const cb = document.createElement('input');
+              cb.type = 'checkbox';
+              cb.checked = selectedO.has(wp);
+              cb.dataset.workerKey = w.key;
+              cb.dataset.workplace = wp;
+              cb.dataset.row = 'obsluha';
+              cb.addEventListener('change', () => {
+                const m = loadQualMatrix();
+                const wid = cb.dataset.workerKey;
+                const name = cb.dataset.workplace;
+                const arr = Array.isArray(m.obsluha[wid]) ? m.obsluha[wid] : [];
+                const set = new Set(arr);
+                if (cb.checked) set.add(name);
+                else set.delete(name);
+                m.obsluha[wid] = Array.from(set);
+                saveQualMatrix(m);
+              });
+              td.appendChild(cb);
+              tr.appendChild(td);
+            });
+          }
+
+          if (hasN) {
+            const selectedN = new Set(matrix.nastavovanie[w.key] || []);
+            workplaces.nastavovanie.forEach(wp => {
+              const td = document.createElement('td');
+              const cb = document.createElement('input');
+              cb.type = 'checkbox';
+              cb.checked = selectedN.has(wp);
+              cb.dataset.workerKey = w.key;
+              cb.dataset.workplace = wp;
+              cb.dataset.row = 'nastavovanie';
+              cb.addEventListener('change', () => {
+                const m = loadQualMatrix();
+                const wid = cb.dataset.workerKey;
+                const name = cb.dataset.workplace;
+                const arr = Array.isArray(m.nastavovanie[wid]) ? m.nastavovanie[wid] : [];
+                const set = new Set(arr);
+                if (cb.checked) set.add(name);
+                else set.delete(name);
+                m.nastavovanie[wid] = Array.from(set);
+                saveQualMatrix(m);
+              });
+              td.appendChild(cb);
+              tr.appendChild(td);
+            });
+          }
+
+          tbody.appendChild(tr);
+        });
+      }
+
+      tbl.appendChild(tbody);
+      wrap.innerHTML = '';
+      wrap.appendChild(tbl);
+    }
+
+    function readQualTableState() {
+      const workplaces = collectWorkplacesFromMachinesSeparated();
+      const matrix = loadQualMatrix();
+      return { workplaces, matrix };
+    }
+
+    openQualBtn?.addEventListener('click', () => toggleQualModal(true));
+
+    // ------- Odchýlka od štandardu (tabuľka školení) -------
+// UPRAVENÉ: train matrix so scopes
+    function loadTrainMatrix() {
+      try {
+        const raw = localStorage.getItem(TRAIN_MATRIX_KEY);
+        if (!raw) return { trainings: [], map: {}, scopes: {} };
+        const obj = JSON.parse(raw);
+        return {
+          trainings: Array.isArray(obj.trainings) ? obj.trainings : [],
+          map: (obj.map && typeof obj.map === 'object') ? obj.map : {},
+          scopes: (obj.scopes && typeof obj.scopes === 'object') ? obj.scopes : {}
+        };
+      } catch { return { trainings: [], map: {}, scopes: {} }; }
+    }
+    function saveTrainMatrix(obj) {
+      localStorage.setItem(TRAIN_MATRIX_KEY, JSON.stringify({
+        trainings: Array.isArray(obj.trainings) ? obj.trainings : [],
+        map: (obj.map && typeof obj.map === 'object') ? obj.map : {},
+        scopes: (obj.scopes && typeof obj.scopes === 'object') ? obj.scopes : {}
+      }));
+    }
+
+    function migrateTrainMatrixToNameKeys() {
+      const m = loadTrainMatrix();
+      const idsSet = new Set(getWorkerItems().map(el => el.dataset.id));
+      const idToKey = new Map();
+      getWorkerItems().forEach(el => {
+        const { key } = getWorkerNameAndKey(el);
+        idToKey.set(el.dataset.id, key);
+      });
+      const out = { trainings: Array.isArray(m.trainings) ? m.trainings.slice() : [], map: {}, scopes: m.scopes || {} };
+      const merge = (dstMap, key, arr) => {
+        if (!key) return;
+        const set = new Set(dstMap[key] || []);
+        (arr || []).forEach(x => set.add(x));
+        dstMap[key] = Array.from(set);
+      };
+
+      for (const [k, arr] of Object.entries(m.map || {})) {
+        const key = idsSet.has(k) ? (idToKey.get(k) || '') : k;
+        merge(out.map, key, arr);
+      }
+      saveTrainMatrix(out);
+      return out;
+    }
+
+    let trainModal = null;
+
+    function ensureTrainModal() {
+      if (trainModal) return trainModal;
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Odchýlka od štandardu">
+          <div class="hd">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <div class="title">Odchýlka od štandardu – školenia</div>
+              <div id="train-center-filter" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap"></div>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <button type="button" id="train-add" title="Pridať školenie">Pridať školenie</button>
+              <button type="button" id="train-close">Zavrieť</button>
+            </div>
+          </div>
+          <div class="bd">
+            <div class="hint" style="margin-bottom:8px">
+              Pridaj názvy školení a zaškrtni pracovníkov, ktorí ho absolvovali. Názvy môžeš premenovať (klik na názov) alebo zmazať (×). Každé školenie môže mať rozsah (strediská/tímy).
+            </div>
+            <div id="train-table-wrap"></div>
+          </div>
+          <div class="ft">
+            <button type="button" id="train-save" style="background:#22c55e;color:#fff;border-color:#22c55e">Uložiť a zavrieť</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay) toggleTrainModal(false);
+      });
+      overlay.querySelector('#train-close')?.addEventListener('click', () => toggleTrainModal(false));
+      overlay.querySelector('#train-save')?.addEventListener('click', () => {
+        toggleTrainModal(false);
+      });
+      overlay.querySelector('#train-add')?.addEventListener('click', () => {
+        const m = loadTrainMatrix();
+        openTrainingScopePicker('', { centers: [], teams: [] }, (finalName, scope) => {
+          if (!m.trainings.includes(finalName)) m.trainings.push(finalName);
+          m.scopes = m.scopes || {};
+          m.scopes[finalName] = {
+            centers: Array.isArray(scope.centers) ? scope.centers : [],
+            teams: Array.isArray(scope.teams) ? scope.teams : []
+          };
+          saveTrainMatrix(m);
+          buildTrainTable();
+          applyTrainingComplianceWarnings();
+        });
+      });
+
+      trainModal = overlay;
+      return overlay;
+    }
+    function toggleTrainModal(open) {
+      ensureTrainModal();
+      trainModal.classList.toggle('open', !!open);
+      if (open) {
+        trainCenterFilter = null; // reset filtra pri otvorení
+        buildTrainTable();
+      }
+    }
+    openTrainBtn?.addEventListener('click', () => toggleTrainModal(true));
+
+    // Panel filtrov stredísk pre školenia (ako v kvalifikačnej)
+    function buildTrainCenterButtons(uniqueCenters) {
+      const bar = trainModal.querySelector('#train-center-filter');
+      if (!bar) return;
+      bar.innerHTML = '';
+
+      const centers = Array.from(uniqueCenters);
+      if (!centers.length) {
+        const span = document.createElement('span');
+        span.textContent = 'Stredisko: (žiadne)';
+        span.style.color = '#6b7280';
+        bar.appendChild(span);
+        return;
+      }
+
+      const label = document.createElement('span');
+      label.textContent = 'Stredisko:';
+      label.style.fontWeight = '700';
+      bar.appendChild(label);
+
+      centers.forEach(cn => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = cn;
+        btn.className = 'center-filter-btn';
+        btn.style.cssText = 'background:#e0e7ff;color:#1e40af;border:1px solid #94a3b8;padding:4px 10px;border-radius:8px;font-size:13px;cursor:pointer';
+        if (trainCenterFilter === cn) {
+          btn.classList.add('active');
+          btn.style.background = '#c7d2fe';
+        }
+        btn.addEventListener('click', () => {
+          const already = trainCenterFilter === cn;
+          trainCenterFilter = already ? null : cn;
+          buildTrainTable();
+        });
+        bar.appendChild(btn);
+      });
+
+      if (trainCenterFilter) {
+        const clearBtn = document.createElement('button');
+        clearBtn.type = 'button';
+        clearBtn.textContent = 'Zrušiť filter';
+        clearBtn.style.cssText = 'margin-left:6px;background:#f3f4f6;border:1px solid #d1d5db;padding:4px 10px;border-radius:8px;cursor:pointer';
+        clearBtn.addEventListener('click', () => { trainCenterFilter = null; buildTrainTable(); });
+        bar.appendChild(clearBtn);
+      }
+    }
+
+    // Picker pre rozsah školenia (názov + strediská + tímy)
+    function openTrainingScopePicker(initialName, initialScope, onConfirm) {
+      const dataCenters = getCentersByWorkerKey();
+      const dataTeams = getTeamsByWorkerKey();
+
+      const uniqueCenters = new Set();
+      dataCenters.forEach(set => set.forEach(c => uniqueCenters.add(c)));
+
+      const uniqueTeams = new Set();
+      dataTeams.forEach(set => set.forEach(t => uniqueTeams.add(t)));
+
+      const overlay = document.createElement('div');
+      overlay.style.cssText = 'position:absolute;inset:0;background:rgba(17,24,39,0.35);display:flex;align-items:center;justify-content:center;z-index:300';
+      const panel = document.createElement('div');
+      panel.style.cssText = 'background:#fff;border:1px solid #e5e7eb;border-radius:10px;box-shadow:0 12px 28px rgba(0,0,0,0.25);padding:14px;min-width:min(720px,94vw);max-height:80vh;overflow:auto';
+      panel.innerHTML = `
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px">
+          <div style="font-weight:800">Rozsah školenia</div>
+          <button type="button" class="x-close" title="Zavrieť">×</button>
+        </div>
+        <div style="display:grid;gap:12px">
+          <div>
+            <label style="font-weight:600;display:block;margin-bottom:6px">Názov školenia</label>
+            <input type="text" class="t-name" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px" />
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            <div>
+              <div style="font-weight:700;margin-bottom:6px">Strediská</div>
+              <div class="centers" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px"></div>
+            </div>
+            <div>
+              <div style="font-weight:700;margin-bottom:6px">Tímy</div>
+              <div class="teams" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:6px"></div>
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end">
+            <button type="button" class="btn-cancel">Zrušiť</button>
+            <button type="button" class="btn-ok" style="background:#22c55e;color:#fff;border:1px solid #22c55e;border-radius:8px;padding:8px 12px">Použiť</button>
+          </div>
+        </div>
+      `;
+
+      overlay.appendChild(panel);
+      trainModal.querySelector('.modal')?.appendChild(overlay);
+
+      const nameInput = panel.querySelector('.t-name');
+      nameInput.value = initialName || '';
+
+      const centersDiv = panel.querySelector('.centers');
+      const teamsDiv = panel.querySelector('.teams');
+
+      const preSelCenters = new Set(initialScope?.centers || []);
+      const preSelTeams = new Set(initialScope?.teams || []);
+
+      Array.from(uniqueCenters).sort().forEach(cn => {
+        const label = document.createElement('label');
+        label.style.cssText = 'display:flex;gap:6px;align-items:center;border:1px solid #e5e7eb;border-radius:8px;padding:6px 8px;cursor:pointer;background:#f9fafb';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = preSelCenters.has(cn);
+        cb.dataset.v = cn;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(cn));
+        centersDiv.appendChild(label);
+      });
+
+      Array.from(uniqueTeams).sort().forEach(tn => {
+        const label = document.createElement('label');
+        label.style.cssText = 'display:flex;gap:6px;align-items:center;border:1px solid #e5e7eb;border-radius:8px;padding:6px 8px;cursor:pointer;background:#f9fafb';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = preSelTeams.has(tn);
+        cb.dataset.v = tn;
+        label.appendChild(cb);
+        label.appendChild(document.createTextNode(tn));
+        teamsDiv.appendChild(label);
+      });
+
+      const close = () => overlay.remove();
+
+      panel.querySelector('.x-close')?.addEventListener('click', close);
+      panel.querySelector('.btn-cancel')?.addEventListener('click', close);
+
+      panel.querySelector('.btn-ok')?.addEventListener('click', () => {
+        const newName = (nameInput.value || '').trim();
+        if (!newName) return;
+
+        const selectedCenters = Array.from(centersDiv.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.dataset.v);
+        const selectedTeams = Array.from(teamsDiv.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.dataset.v);
+
+        onConfirm?.(newName, { centers: selectedCenters, teams: selectedTeams });
+        close();
+      });
+
+      nameInput.focus();
+    }
+
+    function buildTrainTable() {
+      migrateTrainMatrixToNameKeys();
+
+      const wrap = trainModal.querySelector('#train-table-wrap');
+      if (!wrap) return;
+
+      const data = loadTrainMatrix();
+      const trainings = data.trainings.slice();
+      const scopes = data.scopes || {};
+
+      let workers = collectWorkersUniqueByName().slice().sort((a,b) => (a.name || '').localeCompare((b.name || ''), 'sk'));
+
+      // Filtrovanie stredísk (ako v kvalifikačnej matici)
+      const centersByKey = getCentersByWorkerKey();
+      const uniqueCenters = new Set();
+      centersByKey.forEach(set => set.forEach(c => uniqueCenters.add(c)));
+      buildTrainCenterButtons(uniqueCenters);
+
+      if (trainCenterFilter) {
+        workers = workers.filter(w => {
+          const cs = centersByKey.get(w.key);
+          return cs && cs.has(trainCenterFilter);
+        });
+      }
+
+      const teamsByKey = getTeamsByWorkerKey();
+
+      const trainingAppliesToWorker = (tName, nameKey) => {
+        const scope = scopes[tName] || { centers: [], teams: [] };
+        const cSet = centersByKey.get(nameKey) || new Set();
+        const tSet = teamsByKey.get(nameKey) || new Set();
+
+        const hasAnyScope = (scope.centers && scope.centers.length) || (scope.teams && scope.teams.length);
+        if (!hasAnyScope) return true;
+
+        const centersOk = (scope.centers || []).some(c => cSet.has(c));
+        const teamsOk   = (scope.teams   || []).some(t => tSet.has(t));
+        return centersOk || teamsOk;
+      };
+
+      const tbl = document.createElement('table');
+      tbl.className = 'tbl';
+
+      const thead = document.createElement('thead');
+      const trh = document.createElement('tr');
+      const thName = document.createElement('th');
+      thName.className = 'sticky name';
+      thName.textContent = 'Pracovník';
+      trh.appendChild(thName);
+
+      trainings.forEach((tName, idx) => {
+        const th = document.createElement('th');
+        th.className = 'sticky';
+
+        const span = document.createElement('span');
+        span.textContent = tName;
+        span.style.cursor = 'pointer';
+        span.title = 'Premenovať školenie';
+        span.addEventListener('click', () => {
+          const newName = prompt('Premenovať školenie:', tName);
+          if (newName === null) return;
+          const trimmed = newName.trim();
+          if (!trimmed) return;
+          const m = loadTrainMatrix();
+          if (m.trainings[idx] !== tName) return;
+
+          // Premenovať v zozname
+          m.trainings[idx] = trimmed;
+
+          // Premenovať v map priradení
+          for (const wid of Object.keys(m.map)) {
+            const set = new Set(Array.isArray(m.map[wid]) ? m.map[wid] : []);
+            if (set.has(tName)) {
+              set.delete(tName);
+              set.add(trimmed);
+              m.map[wid] = Array.from(set);
+            }
+          }
+
+          // Premenovať v scopes
+          m.scopes = m.scopes || {};
+          if (m.scopes[tName]) {
+            m.scopes[trimmed] = m.scopes[tName];
+            delete m.scopes[tName];
+          }
+
+          saveTrainMatrix(m);
+          buildTrainTable();
+          applyTrainingComplianceWarnings();
+        });
+
+        const del = document.createElement('button');
+        del.type = 'button';
+        del.textContent = '×';
+        del.title = 'Zmazať školenie';
+        del.style.marginLeft = '6px';
+        del.addEventListener('click', (e) => {
+          e.stopPropagation();
+          if (!confirm(`Zmazať školenie „${tName}“?`)) return;
+          const m = loadTrainMatrix();
+          m.trainings = m.trainings.filter(x => x !== tName);
+          for (const wid of Object.keys(m.map)) {
+            const arr = Array.isArray(m.map[wid]) ? m.map[wid] : [];
+            m.map[wid] = arr.filter(x => x !== tName);
+          }
+          if (m.scopes) delete m.scopes[tName];
+          saveTrainMatrix(m);
+          buildTrainTable();
+          applyTrainingComplianceWarnings();
+        });
+
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.textContent = '⚙';
+        edit.title = 'Upraviť rozsah (strediská/tímy)';
+        edit.style.marginLeft = '6px';
+        edit.addEventListener('click', () => {
+          const m = loadTrainMatrix();
+          const currentScope = (m.scopes && m.scopes[tName]) || { centers: [], teams: [] };
+          openTrainingScopePicker(tName, currentScope, (newName, scope) => {
+            if (newName !== tName) {
+              const idx2 = m.trainings.indexOf(tName);
+              if (idx2 >= 0) m.trainings[idx2] = newName;
+
+              // rename v map
+              for (const wid of Object.keys(m.map)) {
+                const set = new Set(Array.isArray(m.map[wid]) ? m.map[wid] : []);
+                if (set.has(tName)) {
+                  set.delete(tName);
+                  set.add(newName);
+                  m.map[wid] = Array.from(set);
+                }
+              }
+
+              // rename v scopes
+              m.scopes = m.scopes || {};
+              m.scopes[newName] = { centers: scope.centers || [], teams: scope.teams || [] };
+              delete m.scopes[tName];
+            } else {
+              m.scopes = m.scopes || {};
+              m.scopes[tName] = { centers: scope.centers || [], teams: scope.teams || [] };
+            }
+            saveTrainMatrix(m);
+            buildTrainTable();
+            applyTrainingComplianceWarnings();
+          });
+        });
+
+        th.appendChild(span);
+        th.appendChild(edit);
+        th.appendChild(del);
+        trh.appendChild(th);
+      });
+
+      thead.appendChild(trh);
+      tbl.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+
+      if (!workers.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 1 + trainings.length;
+        td.style.textAlign = 'center';
+        td.style.color = '#6b7280';
+        td.textContent = trainCenterFilter ? 'Žiadni pracovníci pre zvolené stredisko.' : 'Žiadni pracovníci.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else if (!trainings.length) {
+        const tr = document.createElement('tr');
+        const td = document.createElement('td');
+        td.colSpan = 1;
+        td.style.textAlign = 'left';
+        td.innerHTML = 'Pridaj aspoň jedno školenie tlačidlom „Pridať školenie“.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+      } else {
+        workers.forEach(w => {
+          const tr = document.createElement('tr');
+          const tdName = document.createElement('td');
+          tdName.className = 'name';
+          tdName.textContent = w.name || '(bez mena)';
+          if (w.team) {
+            const small = document.createElement('span');
+            small.style.color = '#6b7280';
+            small.style.marginLeft = '6px';
+            small.textContent = `– ${w.team}`;
+            tdName.appendChild(small);
+          }
+          tr.appendChild(tdName);
+
+          const selected = new Set(Array.isArray(data.map[w.key]) ? data.map[w.key] : []);
+          trainings.forEach(tName => {
+            const td = document.createElement('td');
+            const applies = trainingAppliesToWorker(tName, w.key);
+
+            if (!applies) {
+              const dash = document.createElement('span');
+              dash.textContent = '—';
+              dash.style.color = '#9ca3af';
+              td.appendChild(dash);
+              tr.appendChild(td);
+              return;
+            }
+
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.checked = selected.has(tName);
+            cb.dataset.workerKey = w.key;
+            cb.dataset.training = tName;
+            cb.addEventListener('change', () => {
+              const m = loadTrainMatrix();
+              const wid = cb.dataset.workerKey;
+              const t = cb.dataset.training;
+              const arr = Array.isArray(m.map[wid]) ? m.map[wid] : [];
+              const set = new Set(arr);
+              if (cb.checked) set.add(t);
+              else set.delete(t);
+              m.map[wid] = Array.from(set);
+              saveTrainMatrix(m);
+              applyTrainingComplianceWarnings();
+            });
+            td.appendChild(cb);
+            tr.appendChild(td);
+          });
+
+          tbody.appendChild(tr);
+        });
+      }
+
+      tbl.appendChild(tbody);
+      wrap.innerHTML = '';
+      wrap.appendChild(tbl);
+    }
+
+    function renameQualKey(prevKey, newKey) {
+      if (!prevKey || !newKey || prevKey === newKey) return;
+      const m = loadQualMatrix();
+      let changed = false;
+      ['obsluha','nastavovanie'].forEach(row => {
+        const src = m[row]?.[prevKey];
+        if (Array.isArray(src)) {
+          const dstArr = Array.isArray(m[row][newKey]) ? m[row][newKey] : [];
+          const set = new Set(dstArr);
+          src.forEach(v => set.add(v));
+          m[row][newKey] = Array.from(set);
+          delete m[row][prevKey];
+          changed = true;
+        }
+      });
+      if (changed) saveQualMatrix(m);
+    }
+
+    function renameTrainKey(prevKey, newKey) {
+      if (!prevKey || !newKey || prevKey === newKey) return;
+      const m = loadTrainMatrix();
+      const src = m.map?.[prevKey];
+      if (Array.isArray(src)) {
+        const dstArr = Array.isArray(m.map[newKey]) ? m.map[newKey] : [];
+        const set = new Set(dstArr);
+        src.forEach(v => set.add(v));
+        m.map[newKey] = Array.from(set);
+        delete m.map[prevKey];
+        saveTrainMatrix(m);
+      }
+    }
+
+    // UPRAVENÉ: rešpektuj scopes
+    function applyTrainingComplianceWarnings() {
+      const data = loadTrainMatrix();
+      const trainings = Array.isArray(data.trainings) ? data.trainings : [];
+      const map = (data && data.map && typeof data.map === 'object') ? data.map : {};
+      const scopes = (data && data.scopes && typeof data.scopes === 'object') ? data.scopes : {};
+
+      const centersByKey = getCentersByWorkerKey();
+      const teamsByKey = getTeamsByWorkerKey();
+
+      const trainingAppliesToWorker = (tName, nameKey) => {
+        const scope = scopes[tName] || { centers: [], teams: [] };
+        const cSet = centersByKey.get(nameKey) || new Set();
+        const tSet = teamsByKey.get(nameKey) || new Set();
+        const hasAnyScope = (scope.centers && scope.centers.length) || (scope.teams && scope.teams.length);
+        if (!hasAnyScope) return true;
+        const centersOk = (scope.centers || []).some(c => cSet.has(c));
+        const teamsOk   = (scope.teams || []).some(t => tSet.has(t));
+        return centersOk || teamsOk;
+      };
+
+      document.querySelectorAll('.item[data-type="pracovnik"]').forEach(workerEl => {
+        const nameEl = workerEl.querySelector('.w-name');
+        if (!nameEl) return;
+
+        const active = workerEl.dataset.active === '1';
+        const shouldCheck = active;
+
+        if (!trainings.length || !shouldCheck) {
+          nameEl.classList.remove('warn-missing-train');
+          return;
+        }
+        const { key: nameKey } = getWorkerNameAndKey(workerEl);
+        const assigned = new Set(Array.isArray(map[nameKey]) ? map[nameKey] : []);
+
+        const applicable = trainings.filter(t => trainingAppliesToWorker(t, nameKey));
+        if (!applicable.length) {
+          nameEl.classList.remove('warn-missing-train');
+          return;
+        }
+
+        const missing = applicable.some(t => !assigned.has(t));
+        nameEl.classList.toggle('warn-missing-train', missing);
+      });
+
+      document.querySelectorAll('.card.attendance .att-row').forEach(row => {
+        const nm = row.querySelector('.nm');
+        if (!nm) return;
+        const active = row.classList.contains('active');
+
+        if (!trainings.length || !active) {
+          nm.classList.remove('warn-missing-train');
+          return;
+        }
+        const nameKey = row.dataset.nameKey || '';
+        const assigned = new Set(Array.isArray(map[nameKey]) ? map[nameKey] : []);
+
+        const applicable = trainings.filter(t => {
+          const scope = scopes[t] || { centers: [], teams: [] };
+          const cSet = getCentersByWorkerKey().get(nameKey) || new Set();
+          const tSet = getTeamsByWorkerKey().get(nameKey) || new Set();
+          const hasAnyScope = (scope.centers && scope.centers.length) || (scope.teams && scope.teams.length);
+          if (!hasAnyScope) return true;
+          const centersOk = (scope.centers || []).some(c => cSet.has(c));
+          const teamsOk   = (scope.teams || []).some(tt => tSet.has(tt));
+          return centersOk || teamsOk;
+        });
+
+        if (!applicable.length) {
+          nm.classList.remove('warn-missing-train');
+          return;
+        }
+
+        const missing = applicable.some(t => !assigned.has(t));
+        nm.classList.toggle('warn-missing-train', missing);
+      });
+    }
+
+    let dotsModal = null;
+
+    function ensureDotsModal() {
+      if (dotsModal) return dotsModal;
+      const overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = `
+        <div class="modal" role="dialog" aria-modal="true" aria-label="Nastavenie bodiek">
+          <div class="hd">
+            <div class="title">Nastavenie bodiek</div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <label for="dots-count-input" style="font-weight:600">Počet bodiek</label>
+              <input id="dots-count-input" type="number" min="1" max="20" step="1" style="width:80px;padding:6px 8px;border:1px solid #d1d5db;border-radius:8px" />
+              <button type="button" id="dots-close">Zavrieť</button>
+            </div>
+          </div>
+          <div class="bd">
+            <div class="hint" style="margin-bottom:8px">
+              Zadaj názvy pre jednotlivé pozície. Rovnaké názvy sa použijú pre Obsluhu aj pre Nastavovanie na všetkých kartách.
+            </div>
+            <div id="dots-table-wrap"></div>
+          </div>
+          <div class="ft">
+            <button type="button" id="dots-apply" style="background:#22c55e;color:#fff;border-color:#22c55e">Použiť</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      const countInput = overlay.querySelector('#dots-count-input');
+      const wrap = overlay.querySelector('#dots-table-wrap');
+
+      function buildTable(n, prev = []) {
+        const defaults = gatherDefaultDotNames(n);
+        const values = [];
+        for (let i = 0; i < n; i++) {
+          values[i] = (prev[i] ?? '').trim() || (defaults[i] ?? '');
+        }
+
+        const tbl = document.createElement('table');
+        tbl.className = 'tbl';
+        const thead = document.createElement('thead');
+        const trh = document.createElement('tr');
+        const th1 = document.createElement('th'); th1.className = 'sticky'; th1.textContent = '#';
+        const th2 = document.createElement('th'); th2.className = 'sticky'; th2.textContent = 'Názov';
+        trh.appendChild(th1); trh.appendChild(th2);
+        thead.appendChild(trh);
+        tbl.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        for (let i = 0; i < n; i++) {
+          const tr = document.createElement('tr');
+          const tdIdx = document.createElement('td'); tdIdx.textContent = String(i+1);
+          const tdName = document.createElement('td');
+          const inp = document.createElement('input');
+          inp.type = 'text';
+          inp.className = 'dots-name-input';
+          inp.style.cssText = 'width:100%;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px';
+          inp.value = values[i] || '';
+          tdName.appendChild(inp);
+          tr.appendChild(tdIdx);
+          tr.appendChild(tdName);
+          tbody.appendChild(tr);
+        }
+        tbl.appendChild(tbody);
+        wrap.innerHTML = '';
+        wrap.appendChild(tbl);
+      }
+
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) toggleDotsModal(false); });
+      overlay.querySelector('#dots-close')?.addEventListener('click', () => toggleDotsModal(false));
+      overlay.querySelector('#dots-apply')?.addEventListener('click', () => {
+        const n = clamp(parseInt(countInput.value, 10) || DOTS_PER_ROW, 1, 20);
+        const names = Array.from(overlay.querySelectorAll('.dots-name-input')).map(inp => inp.value.trim());
+        setDotsPerRowUnifiedNames(n, names);
+        toggleDotsModal(false);
+      });
+      countInput.addEventListener('change', () => {
+        const prev = Array.from(overlay.querySelectorAll('.dots-name-input')).map(i => i.value);
+        const n = clamp(parseInt(countInput.value, 10) || DOTS_PER_ROW, 1, 20);
+        buildTable(n, prev);
+      });
+
+      dotsModal = overlay;
+
+      countInput.value = DOTS_PER_ROW;
+      buildTable(DOTS_PER_ROW, []);
+
+      return overlay;
+    }
+
+    function toggleDotsModal(open) {
+      const overlay = ensureDotsModal();
+      overlay.classList.toggle('open', !!open);
+      if (open) {
+        const countInput = overlay.querySelector('#dots-count-input');
+        const wrap = overlay.querySelector('#dots-table-wrap');
+        countInput.value = DOTS_PER_ROW;
+        const prev = [];
+        wrap.innerHTML = '';
+        const buildTable = (n, prev = []) => {
+          const defaults = gatherDefaultDotNames(n);
+          const values = [];
+          for (let i = 0; i < n; i++) {
+            values[i] = (prev[i] ?? '').trim() || (defaults[i] ?? '');
+          }
+          const tbl = document.createElement('table');
+          tbl.className = 'tbl';
+          const thead = document.createElement('thead');
+          const trh = document.createElement('tr');
+          const th1 = document.createElement('th'); th1.className = 'sticky'; th1.textContent = '#';
+          const th2 = document.createElement('th'); th2.className = 'sticky'; th2.textContent = 'Názov';
+          trh.appendChild(th1); trh.appendChild(th2);
+          thead.appendChild(trh);
+          tbl.appendChild(thead);
+          const tbody = document.createElement('tbody');
+          for (let i = 0; i < n; i++) {
+            const tr = document.createElement('tr');
+            const tdIdx = document.createElement('td'); tdIdx.textContent = String(i+1);
+            const tdName = document.createElement('td');
+            const inp = document.createElement('input');
+            inp.type = 'text';
+            inp.className = 'dots-name-input';
+            inp.style.cssText = 'width:100%;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px';
+            inp.value = values[i] || '';
+            tdName.appendChild(inp);
+            tr.appendChild(tdIdx);
+            tr.appendChild(tdName);
+            tbody.appendChild(tr);
+          }
+          tbl.appendChild(tbody);
+          wrap.innerHTML = '';
+          wrap.appendChild(tbl);
+        };
+        buildTable(DOTS_PER_ROW, prev);
+
+        const onChange = () => {
+          const prevVals = Array.from(overlay.querySelectorAll('.dots-name-input')).map(i => i.value);
+          const n = clamp(parseInt(countInput.value, 10) || DOTS_PER_ROW, 1, 20);
+          buildTable(n, prevVals);
+        };
+        countInput.onchange = onChange;
+      }
+    }
+
+    function gatherDefaultDotNames(maxN) {
+      const res = Array.from({ length: maxN }, () => '');
+      const machines = [...document.querySelectorAll('.item[data-type="stroj"]')];
+      for (const m of machines) {
+        const obs = [...m.querySelectorAll('.row[data-row="obsluha"] .dot')];
+        for (let i = 0; i < Math.min(maxN, obs.length); i++) {
+          if (!res[i] && obs[i].dataset.note && obs[i].dataset.note.trim()) res[i] = obs[i].dataset.note.trim();
+        }
+      }
+      for (const m of machines) {
+        const nas = [...m.querySelectorAll('.row[data-row="nastavovanie"] .dot')];
+        for (let i = 0; i < Math.min(maxN, nas.length); i++) {
+          if (!res[i] && nas[i].dataset.note && nas[i].dataset.note.trim()) res[i] = nas[i].dataset.note.trim();
+        }
+      }
+      return res;
+    }
+
+    function setDotsPerRowUnifiedNames(n, namesArr) {
+      const N = clamp(parseInt(n, 10) || DOTS_PER_ROW, 1, 20);
+      DOTS_PER_ROW = N;
+      saveSettingsObj({ dotsPerRow: DOTS_PER_ROW });
+      applyDotsLayoutVars();
+
+      const applyNames = (el, owner, rowName, names) => {
+        const dots = [...el.querySelectorAll(`.${owner} .row[data-row="${rowName}"] .dot`)];
+        for (let i = 0; i < Math.min(dots.length, names.length); i++) {
+          const name = (names[i] || '').trim();
+          if (name) dots[i].dataset.note = name;
+          else delete dots[i].dataset.note;
+        }
+      };
+
+      const items = [...board.querySelectorAll('.item[data-type="stroj"], .item[data-type="pracovnik"]')];
+      items.forEach(el => {
+        rebuildDotsForItem(el);
+        const owner = el.dataset.type === 'stroj' ? 'machine' : 'worker';
+        applyNames(el, owner, 'obsluha', namesArr);
+        applyNames(el, owner, 'nastavovanie', namesArr);
+      });
+
+      saveState();
+      updateDockUI();
+      refreshAttendanceCards();
+    }
+
+    setDotsBtn.addEventListener('click', () => toggleDotsModal(true));
+
+    migrateQualMatrixToNameKeys();
+    migrateTrainMatrixToNameKeys();
+    applyTrainingComplianceWarnings();
+  </script>
+
+  <!-- LOKÁLNY TRH PRÁCE – doplnok -->
+  <script>
+/* ============ LOKÁLNY „TRH PRÁCE“ (len v rámci tabuľe) ============ */
+(function LocalMarket() {
+  const STORE_KEY = 'interactive-board-local-market-v1';
+
+  function loadMarket() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); } catch { return []; }
+  }
+  function saveMarket(arr) {
+    localStorage.setItem(STORE_KEY, JSON.stringify(arr || []));
+    updateBadge();
+  }
+
+  function buildWorkerSnapshot(workerEl) {
+    const getRow = (row) => [...workerEl.querySelectorAll(`.worker .row[data-row="${row}"] .dot`)]
+      .map(d => ({ state: Math.min(1, (d.dataset.state|0)), note: d.dataset.note || '' }));
+    return {
+      workerName: workerEl.querySelector('.w-name')?.textContent?.trim() || '',
+      teamName: workerEl.querySelector('.team-name')?.textContent?.trim() || '',
+      centerName: workerEl.querySelector('.center-name')?.textContent?.trim() || '',
+      workerNote: workerEl.querySelector('.w-name')?.dataset.note || '',
+      obsluha: getRow('obsluha'),
+      nastavovanie: getRow('nastavovanie'),
+      active: workerEl.dataset.active === '1' ? 1 : 0
+    };
+  }
+
+function addToMarketFromWorkerEl(workerEl) {
+  const snap = buildWorkerSnapshot(workerEl);
+  const arr = loadMarket();
+
+  // Kontrola: existuje už podľa workerName + teamName + centerName
+  const isDuplicate = arr.some(r =>
+    (r.worker.workerName || '') === (snap.workerName || '') &&
+    (r.worker.teamName || '') === (snap.teamName || '') &&
+    (r.worker.centerName || '') === (snap.centerName || '')
+  );
+  if (isDuplicate) {
+    alert('Tento pracovník už je na trhu práce.');
+    return;
+  }
+
+  const rec = {
+    id: crypto.randomUUID(),
+    placedAt: Date.now(),
+    worker: snap
+  };
+  arr.push(rec);
+  saveMarket(arr);
+
+  workerEl.remove();
+  saveState();
+  updateDockUI();
+  updateTeamButtons();
+  refreshAttendanceCards();
+  renderMarketList();
+}
+
+  function takeFromMarket(recId) {
+    const arr = loadMarket();
+    const idx = arr.findIndex(r => r.id === recId);
+    if (idx < 0) return;
+    const snap = arr[idx].worker;
+
+    createItem({
+      type: 'pracovnik',
+      x: 24 + Math.round(Math.random() * 60),
+      y: 24 + Math.round(Math.random() * 60),
+      workerName: snap.workerName,
+      teamName: snap.teamName,
+      centerName: snap.centerName,
+      workerNote: snap.workerNote,
+      obsluha: Array.isArray(snap.obsluha) ? snap.obsluha : undefined,
+      nastavovanie: Array.isArray(snap.nastavovanie) ? snap.nastavovanie : undefined,
+      active: snap.active ? 1 : 0
+    });
+    arr.splice(idx, 1);
+    saveMarket(arr);
+
+    saveState();
+    updateDockUI();
+    updateTeamButtons();
+    refreshAttendanceCards();
+    renderMarketList();
+  }
+
+  let marketOverlay = null, marketListDiv = null, openBtn = document.getElementById('open-market-local');
+
+  function ensureMarketUI() {
+    if (marketOverlay) return;
+
+    marketOverlay = document.createElement('div');
+    marketOverlay.className = 'modal-overlay';
+    marketOverlay.innerHTML = `
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Trh práce (lokálny)">
+        <div class="hd">
+          <div class="title">Trh práce (lokálny)</div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <button type="button" id="market-close">Zavrieť</button>
+          </div>
+        </div>
+        <div class="bd">
+          <div class="hint" style="margin-bottom:8px">
+            Zobrazuje pracovníkov presunutých z tabule. Kliknutím na „Zobrať“ ich vrátiš späť na tabuľu.
+          </div>
+          <div id="market-list" style="display:grid;gap:8px"></div>
+        </div>
+        <div class="ft"></div>
+      </div>
+    `;
+    document.body.appendChild(marketOverlay);
+
+    marketListDiv = marketOverlay.querySelector('#market-list');
+
+    marketOverlay.addEventListener('click', (e) => { if (e.target === marketOverlay) toggleMarket(false); });
+    marketOverlay.querySelector('#market-close')?.addEventListener('click', () => toggleMarket(false));
+
+    updateBadge();
+  }
+
+  function toggleMarket(open) {
+    ensureMarketUI();
+    marketOverlay.classList.toggle('open', !!open);
+    if (open) renderMarketList();
+  }
+
+  function formatDateSk(ts) {
+    try { return new Date(ts).toLocaleString('sk-SK'); } catch { return ''; }
+  }
+  function escapeHTML(s) { return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
+
+  function renderMarketList() {
+    if (!marketListDiv) return;
+    const items = loadMarket().sort((a,b)=>b.placedAt-a.placedAt);
+    marketListDiv.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.style.color = '#6b7280';
+      empty.textContent = 'Trh práce je prázdny.';
+      marketListDiv.appendChild(empty);
+      updateBadge();
+      return;
+    }
+    items.forEach(rec => {
+      const div = document.createElement('div');
+      div.style.cssText = 'display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px;padding:8px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb';
+      const left = document.createElement('div');
+      left.innerHTML =
+        `<strong>${escapeHTML(rec.worker.workerName || '(bez mena)')}</strong>` +
+        (rec.worker.teamName ? ` <span style="color:#6b7280">– ${escapeHTML(rec.worker.teamName)}</span>` : '') +
+        (rec.worker.centerName ? ` <span style="color:#6b7280">– ${escapeHTML(rec.worker.centerName)}</span>` : '') +
+        (rec.placedAt ? ` <span style="color:#9ca3af">(${escapeHTML(formatDateSk(rec.placedAt))})</span>` : '');
+
+      const btns = document.createElement('div');
+      btns.style.display = 'inline-flex';
+      btns.style.gap = '6px';
+
+      const takeBtn = document.createElement('button');
+      takeBtn.type = 'button';
+      takeBtn.textContent = 'Zobrať';
+      takeBtn.style.cssText = 'padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;background:#ecfdf5;color:#065f46;font-weight:600;cursor:pointer';
+      takeBtn.addEventListener('click', () => takeFromMarket(rec.id));
+
+      btns.appendChild(takeBtn);
+
+      div.appendChild(left);
+      div.appendChild(btns);
+      marketListDiv.appendChild(div);
+    });
+    updateBadge();
+  }
+
+  function updateBadge() {
+    const n = loadMarket().length;
+    if (openBtn) openBtn.textContent = n > 0 ? `Trh práce (${n})` : 'Trh práce';
+  }
+
+  function attachPublishButton(workerEl) {
+    if (!workerEl || workerEl.dataset.type !== 'pracovnik') return;
+    if (workerEl.querySelector('.market-publish-btn')) return;
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'market-publish-btn no-drag';
+    btn.title = 'Publikovať na trh práce (lokálne – karta sa presunie do zoznamu Trh práce)';
+    btn.style.cssText = 'position:absolute;right:114px;bottom:8px;width:28px;height:28px;border-radius:50%;border:1px solid #e5e7eb;background:#fff;color:#2563eb;box-shadow:0 1px 3px rgba(0,0,0,0.15);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;z-index:1';
+    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      addToMarketFromWorkerEl(workerEl);
+    });
+
+    workerEl.appendChild(btn);
+  }
+
+  document.querySelectorAll('.item[data-type="pracovnik"]').forEach(attachPublishButton);
+  const layerWorkers = document.getElementById('layer-workers');
+  if (layerWorkers) {
+    const obs = new MutationObserver(muts => {
+      muts.forEach(m => {
+        m.addedNodes && m.addedNodes.forEach(n => {
+          if (n.nodeType === 1 && n.classList?.contains('item') && n.dataset.type === 'pracovnik') {
+            attachPublishButton(n);
+          }
+        });
+      });
+    });
+    obs.observe(layerWorkers, { childList: true });
+  }
+
+  const openBtnEl = document.getElementById('open-market-local');
+  openBtnEl?.addEventListener('click', () => toggleMarket(true));
+  ensureMarketUI();
+  renderMarketList();
+})();
+  </script>
+</body>
+</html>
