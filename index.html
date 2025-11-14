@@ -688,7 +688,7 @@
 </head>
 <body>
   <div class="toolbar">
-    <button id="open-market-local" title="Zobraziť lokálny trh práce">Trh práce</button>
+    <button id="open-market-local" title="Zobraziť trh práce v OneDrive">Trh práce</button>
     <button id="add-machine" style="background:#22c55e;color:#fff;border-color:#22c55e">Pridať stroj</button>
     <button id="add-worker" style="background:#22c55e;color:#fff;border-color:#22c55e">Pridať pracovník</button>
     <button id="add-downtime" style="background:#f59e0b;color:#111827;border-color:#f59e0b">Pridať odstavenie</button>
@@ -3775,18 +3775,134 @@ setTimeout(() => {
     applyTrainingComplianceWarnings();
   </script>
 
-  <!-- LOKÁLNY TRH PRÁCE – doplnok -->
-  <script>
-/* ============ LOKÁLNY „TRH PRÁCE“ (len v rámci tabuľe) ============ */
-(function LocalMarket() {
-  const STORE_KEY = 'interactive-board-local-market-v1';
+  <!-- MSAL pre Microsoft Graph -->
+  <script src="https://alcdn.msauth.net/browser/2.38.2/js/msal-browser.min.js"></script>
 
-  function loadMarket() {
-    try { return JSON.parse(localStorage.getItem(STORE_KEY) || '[]'); } catch { return []; }
+  <!-- ONEDRIVE TRH PRÁCE – doplnok (Microsoft Graph) -->
+  <script>
+/* ============ TRH PRÁCE cez OneDrive/SharePoint (Microsoft Graph) ============ */
+(function OneDriveMarket() {
+  // Konfigurácia Azure AD aplikácie
+  const APP_CLIENT_ID = 'eabcf3dc-651f-432e-a02f-827a71b65897';
+  const AUTHORITY = 'https://login.microsoftonline.com/organizations'; // podnikové účty
+  // Uistite sa, že Redirect URI v Azure = presná URL tejto stránky (GitHub Pages atď.)
+  const REDIRECT_URI = window.location.origin + window.location.pathname;
+
+  // OneDrive cesta
+  const MARKET_DIR = 'Documents/Trh';
+  const MARKET_FILE = 'market.json';
+
+  // Scopes potrebné pre MS Graph
+  const GRAPH_SCOPES = ['User.Read', 'Files.ReadWrite', 'offline_access'];
+
+  // MSAL init
+  const msalConfig = {
+    auth: { clientId: APP_CLIENT_ID, authority: AUTHORITY, redirectUri: REDIRECT_URI },
+    cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
+  };
+  const msalInstance = new msal.PublicClientApplication(msalConfig);
+  let account = null;
+
+  msalInstance.handleRedirectPromise().then(res => {
+    if (res && res.account) {
+      account = res.account;
+      msalInstance.setActiveAccount(account);
+    } else {
+      account = msalInstance.getActiveAccount() || (msalInstance.getAllAccounts()[0] || null);
+      if (account) msalInstance.setActiveAccount(account);
+    }
+    updateBadge({ silent: true });
+  }).catch(e => console.warn('MSAL redirect error', e));
+
+  async function getTokenSilent() {
+    const acc = msalInstance.getActiveAccount() || (msalInstance.getAllAccounts()[0] || null);
+    if (!acc) return null;
+    try {
+      const r = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: acc });
+      return r.accessToken;
+    } catch {
+      return null;
+    }
   }
-  function saveMarket(arr) {
-    localStorage.setItem(STORE_KEY, JSON.stringify(arr || []));
-    updateBadge();
+  async function getTokenInteractive() {
+    const loginResult = await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
+    account = loginResult.account;
+    msalInstance.setActiveAccount(account);
+    const tokenRes = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
+    return tokenRes.accessToken;
+  }
+  async function ensureToken({ interactive } = { interactive: false }) {
+    let tok = await getTokenSilent();
+    if (!tok && interactive) tok = await getTokenInteractive();
+    return tok;
+  }
+
+  async function graph(url, { method = 'GET', body = null, headers = {}, interactive = false } = {}) {
+    const token = await ensureToken({ interactive });
+    if (!token) throw new Error('AUTH_REQUIRED');
+    const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
+      method,
+      headers: {
+        'Authorization': 'Bearer ' + token,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+        ...headers
+      },
+      body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(()=> '');
+      throw new Error('GRAPH_' + res.status + ':' + text);
+    }
+    return res;
+  }
+
+  async function ensureFolderExists() {
+    try {
+      await graph(`/me/drive/root:/${encodeURIComponent(MARKET_DIR)}`, { interactive: false });
+      return;
+    } catch (e) {
+      const msg = String(e.message || '');
+      if (!msg.startsWith('GRAPH_404')) throw e;
+      // Vytvor zložku Trh pod Documents
+      const parts = MARKET_DIR.split('/');
+      const folderName = parts.pop();
+      const parentPath = parts.join('/'); // 'Documents'
+      await graph(`/me/drive/root:/${encodeURIComponent(parentPath)}:/children`, {
+        method: 'POST',
+        body: { name: folderName, folder: {}, '@microsoft.graph.conflictBehavior': 'replace' },
+        interactive: true
+      });
+    }
+  }
+
+  async function loadRemoteMarket({ interactive } = { interactive: false }) {
+    const token = await ensureToken({ interactive });
+    if (!token) throw new Error('AUTH_REQUIRED');
+    await ensureFolderExists();
+    try {
+      const res = await graph(`/me/drive/root:/${encodeURIComponent(MARKET_DIR)}/${encodeURIComponent(MARKET_FILE)}:/content`, { interactive: false });
+      const text = await res.text();
+      if (!text.trim()) return [];
+      try { return JSON.parse(text); } catch { return []; }
+    } catch (e) {
+      const msg = String(e.message || '');
+      if (msg.startsWith('GRAPH_404')) {
+        await saveRemoteMarket([], { interactive: false });
+        return [];
+      }
+      throw e;
+    }
+  }
+
+  async function saveRemoteMarket(arr, { interactive } = { interactive: true }) {
+    await ensureFolderExists();
+    const body = JSON.stringify(arr || [], null, 2);
+    await graph(`/me/drive/root:/${encodeURIComponent(MARKET_DIR)}/${encodeURIComponent(MARKET_FILE)}:/content`, {
+      method: 'PUT',
+      body,
+      headers: { 'Content-Type': 'application/json' },
+      interactive
+    });
   }
 
   function buildWorkerSnapshot(workerEl) {
@@ -3803,63 +3919,74 @@ setTimeout(() => {
     };
   }
 
-function addToMarketFromWorkerEl(workerEl) {
-  const snap = buildWorkerSnapshot(workerEl);
-  const arr = loadMarket();
+  async function addToMarketFromWorkerEl(workerEl) {
+    try {
+      const arr = await loadRemoteMarket({ interactive: true });
+      const snap = buildWorkerSnapshot(workerEl);
 
-  // Kontrola: existuje už podľa workerName + teamName + centerName
-  const isDuplicate = arr.some(r =>
-    (r.worker.workerName || '') === (snap.workerName || '') &&
-    (r.worker.teamName || '') === (snap.teamName || '') &&
-    (r.worker.centerName || '') === (snap.centerName || '')
-  );
-  if (isDuplicate) {
-    alert('Tento pracovník už je na trhu práce.');
-    return;
+      const duplicate = arr.some(r =>
+        (r.worker?.workerName || '') === (snap.workerName || '') &&
+        (r.worker?.teamName || '') === (snap.teamName || '') &&
+        (r.worker?.centerName || '') === (snap.centerName || '')
+      );
+      if (duplicate) {
+        alert('Tento pracovník už je na trhu práce.');
+        return;
+      }
+
+      const rec = { id: crypto.randomUUID(), placedAt: Date.now(), worker: snap };
+      arr.push(rec);
+      await saveRemoteMarket(arr, { interactive: true });
+
+      workerEl.remove();
+      saveState();
+      updateDockUI();
+      updateTeamButtons();
+      refreshAttendanceCards();
+      await renderMarketList();
+    } catch (e) {
+      if (String(e.message) === 'AUTH_REQUIRED') alert('Na používanie Trhu práce sa prihláste.');
+      else alert('Uloženie na Trh práce zlyhalo.');
+      console.error(e);
+    } finally {
+      updateBadge({ silent: true });
+    }
   }
 
-  const rec = {
-    id: crypto.randomUUID(),
-    placedAt: Date.now(),
-    worker: snap
-  };
-  arr.push(rec);
-  saveMarket(arr);
+  async function takeFromMarket(recId) {
+    try {
+      const arr = await loadRemoteMarket({ interactive: true });
+      const idx = arr.findIndex(r => r.id === recId);
+      if (idx < 0) return;
+      const snap = arr[idx].worker;
 
-  workerEl.remove();
-  saveState();
-  updateDockUI();
-  updateTeamButtons();
-  refreshAttendanceCards();
-  renderMarketList();
-}
+      createItem({
+        type: 'pracovnik',
+        x: 24 + Math.round(Math.random() * 60),
+        y: 24 + Math.round(Math.random() * 60),
+        workerName: snap.workerName,
+        teamName: snap.teamName,
+        centerName: snap.centerName,
+        workerNote: snap.workerNote,
+        obsluha: Array.isArray(snap.obsluha) ? snap.obsluha : undefined,
+        nastavovanie: Array.isArray(snap.nastavovanie) ? snap.nastavovanie : undefined,
+        active: snap.active ? 1 : 0
+      });
 
-  function takeFromMarket(recId) {
-    const arr = loadMarket();
-    const idx = arr.findIndex(r => r.id === recId);
-    if (idx < 0) return;
-    const snap = arr[idx].worker;
+      arr.splice(idx, 1);
+      await saveRemoteMarket(arr, { interactive: true });
 
-    createItem({
-      type: 'pracovnik',
-      x: 24 + Math.round(Math.random() * 60),
-      y: 24 + Math.round(Math.random() * 60),
-      workerName: snap.workerName,
-      teamName: snap.teamName,
-      centerName: snap.centerName,
-      workerNote: snap.workerNote,
-      obsluha: Array.isArray(snap.obsluha) ? snap.obsluha : undefined,
-      nastavovanie: Array.isArray(snap.nastavovanie) ? snap.nastavovanie : undefined,
-      active: snap.active ? 1 : 0
-    });
-    arr.splice(idx, 1);
-    saveMarket(arr);
-
-    saveState();
-    updateDockUI();
-    updateTeamButtons();
-    refreshAttendanceCards();
-    renderMarketList();
+      saveState();
+      updateDockUI();
+      updateTeamButtons();
+      refreshAttendanceCards();
+      await renderMarketList();
+    } catch (e) {
+      alert('Operácia zlyhala.');
+      console.error(e);
+    } finally {
+      updateBadge({ silent: true });
+    }
   }
 
   let marketOverlay = null, marketListDiv = null, openBtn = document.getElementById('open-market-local');
@@ -3870,16 +3997,17 @@ function addToMarketFromWorkerEl(workerEl) {
     marketOverlay = document.createElement('div');
     marketOverlay.className = 'modal-overlay';
     marketOverlay.innerHTML = `
-      <div class="modal" role="dialog" aria-modal="true" aria-label="Trh práce (lokálny)">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Trh práce (OneDrive)">
         <div class="hd">
-          <div class="title">Trh práce (lokálny)</div>
-          <div style="display:flex;gap:8px;align-items:center">
+          <div class="title">Trh práce (OneDrive)</div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button type="button" id="market-refresh" title="Obnoviť zoznam">Obnoviť</button>
             <button type="button" id="market-close">Zavrieť</button>
           </div>
         </div>
         <div class="bd">
           <div class="hint" style="margin-bottom:8px">
-            Zobrazuje pracovníkov presunutých z tabule. Kliknutím na „Zobrať“ ich vrátiš späť na tabuľu.
+            Zobrazuje pracovníkov publikovaných do súboru Documents/Trh/market.json v OneDrive. Kliknutím na „Zobrať“ ich vrátiš späť na tabuľu.
           </div>
           <div id="market-list" style="display:grid;gap:8px"></div>
         </div>
@@ -3892,14 +4020,15 @@ function addToMarketFromWorkerEl(workerEl) {
 
     marketOverlay.addEventListener('click', (e) => { if (e.target === marketOverlay) toggleMarket(false); });
     marketOverlay.querySelector('#market-close')?.addEventListener('click', () => toggleMarket(false));
+    marketOverlay.querySelector('#market-refresh')?.addEventListener('click', () => renderMarketList());
 
-    updateBadge();
+    updateBadge({ silent: true });
   }
 
   function toggleMarket(open) {
     ensureMarketUI();
     marketOverlay.classList.toggle('open', !!open);
-    if (open) renderMarketList();
+    if (open) renderMarketList(true);
   }
 
   function formatDateSk(ts) {
@@ -3907,50 +4036,72 @@ function addToMarketFromWorkerEl(workerEl) {
   }
   function escapeHTML(s) { return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
 
-  function renderMarketList() {
+  async function renderMarketList(interactive = false) {
     if (!marketListDiv) return;
-    const items = loadMarket().sort((a,b)=>b.placedAt-a.placedAt);
-    marketListDiv.innerHTML = '';
-    if (!items.length) {
-      const empty = document.createElement('div');
-      empty.style.color = '#6b7280';
-      empty.textContent = 'Trh práce je prázdny.';
-      marketListDiv.appendChild(empty);
-      updateBadge();
-      return;
+    marketListDiv.innerHTML = '<div style="color:#6b7280">Načítavam...</div>';
+    try {
+      const items = await loadRemoteMarket({ interactive });
+      items.sort((a,b)=>b.placedAt-a.placedAt);
+      marketListDiv.innerHTML = '';
+      if (!items.length) {
+        const empty = document.createElement('div');
+        empty.style.color = '#6b7280';
+        empty.textContent = 'Trh práce je prázdny.';
+        marketListDiv.appendChild(empty);
+        updateBadge({ silent: true });
+        return;
+      }
+      items.forEach(rec => {
+        const div = document.createElement('div');
+        div.style.cssText = 'display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px;padding:8px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb';
+        const left = document.createElement('div');
+        left.innerHTML =
+          `<strong>${escapeHTML(rec.worker?.workerName || '(bez mena)')}</strong>` +
+          (rec.worker?.teamName ? ` <span style="color:#6b7280">– ${escapeHTML(rec.worker.teamName)}</span>` : '') +
+          (rec.worker?.centerName ? ` <span style="color:#6b7280">– ${escapeHTML(rec.worker.centerName)}</span>` : '') +
+          (rec.placedAt ? ` <span style="color:#9ca3af">(${escapeHTML(formatDateSk(rec.placedAt))})</span>` : '');
+
+        const btns = document.createElement('div');
+        btns.style.display = 'inline-flex';
+        btns.style.gap = '6px';
+
+        const takeBtn = document.createElement('button');
+        takeBtn.type = 'button';
+        takeBtn.textContent = 'Zobrať';
+        takeBtn.style.cssText = 'padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;background:#ecfdf5;color:#065f46;font-weight:600;cursor:pointer';
+        takeBtn.addEventListener('click', () => takeFromMarket(rec.id));
+
+        btns.appendChild(takeBtn);
+
+        div.appendChild(left);
+        div.appendChild(btns);
+        marketListDiv.appendChild(div);
+      });
+    } catch (e) {
+      if (String(e.message) === 'AUTH_REQUIRED') {
+        marketListDiv.innerHTML = '<div style="color:#991b1b">Pre zobrazenie Trhu práce sa prihláste.</div>';
+      } else {
+        marketListDiv.innerHTML = '<div style="color:#991b1b">Načítanie zlyhalo.</div>';
+        console.error(e);
+      }
+    } finally {
+      updateBadge({ silent: true });
     }
-    items.forEach(rec => {
-      const div = document.createElement('div');
-      div.style.cssText = 'display:grid;grid-template-columns:1fr auto;align-items:center;gap:10px;padding:8px;border:1px solid #e5e7eb;border-radius:8px;background:#f9fafb';
-      const left = document.createElement('div');
-      left.innerHTML =
-        `<strong>${escapeHTML(rec.worker.workerName || '(bez mena)')}</strong>` +
-        (rec.worker.teamName ? ` <span style="color:#6b7280">– ${escapeHTML(rec.worker.teamName)}</span>` : '') +
-        (rec.worker.centerName ? ` <span style="color:#6b7280">– ${escapeHTML(rec.worker.centerName)}</span>` : '') +
-        (rec.placedAt ? ` <span style="color:#9ca3af">(${escapeHTML(formatDateSk(rec.placedAt))})</span>` : '');
-
-      const btns = document.createElement('div');
-      btns.style.display = 'inline-flex';
-      btns.style.gap = '6px';
-
-      const takeBtn = document.createElement('button');
-      takeBtn.type = 'button';
-      takeBtn.textContent = 'Zobrať';
-      takeBtn.style.cssText = 'padding:6px 10px;border:1px solid #d1d5db;border-radius:6px;background:#ecfdf5;color:#065f46;font-weight:600;cursor:pointer';
-      takeBtn.addEventListener('click', () => takeFromMarket(rec.id));
-
-      btns.appendChild(takeBtn);
-
-      div.appendChild(left);
-      div.appendChild(btns);
-      marketListDiv.appendChild(div);
-    });
-    updateBadge();
   }
 
-  function updateBadge() {
-    const n = loadMarket().length;
-    if (openBtn) openBtn.textContent = n > 0 ? `Trh práce (${n})` : 'Trh práce';
+  async function updateBadge({ silent } = { silent: false }) {
+    try {
+      const token = await ensureToken({ interactive: !silent && false });
+      if (!token) {
+        if (openBtn) openBtn.textContent = 'Trh práce';
+        return;
+      }
+      const items = await loadRemoteMarket({ interactive: false }).catch(()=>[]);
+      const n = Array.isArray(items) ? items.length : 0;
+      if (openBtn) openBtn.textContent = n > 0 ? `Trh práce (${n})` : 'Trh práce';
+    } catch {
+      if (openBtn) openBtn.textContent = 'Trh práce';
+    }
   }
 
   function attachPublishButton(workerEl) {
@@ -3960,21 +4111,21 @@ function addToMarketFromWorkerEl(workerEl) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'market-publish-btn no-drag';
-    btn.title = 'Publikovať na trh práce (lokálne – karta sa presunie do zoznamu Trh práce)';
+    btn.title = 'Publikovať na trh práce (OneDrive – karta sa presunie do zoznamu Trh práce)';
     btn.style.cssText = 'position:absolute;right:114px;bottom:8px;width:28px;height:28px;border-radius:50%;border:1px solid #e5e7eb;background:#fff;color:#2563eb;box-shadow:0 1px 3px rgba(0,0,0,0.15);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;z-index:1';
     btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
 
-    btn.addEventListener('click', (e) => {
+    btn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      addToMarketFromWorkerEl(workerEl);
+      await addToMarketFromWorkerEl(workerEl);
     });
 
     workerEl.appendChild(btn);
   }
 
   document.querySelectorAll('.item[data-type="pracovnik"]').forEach(attachPublishButton);
-  const layerWorkers = document.getElementById('layer-workers');
-  if (layerWorkers) {
+  const layerWorkersEl = document.getElementById('layer-workers');
+  if (layerWorkersEl) {
     const obs = new MutationObserver(muts => {
       muts.forEach(m => {
         m.addedNodes && m.addedNodes.forEach(n => {
@@ -3984,13 +4135,12 @@ function addToMarketFromWorkerEl(workerEl) {
         });
       });
     });
-    obs.observe(layerWorkers, { childList: true });
+    obs.observe(layerWorkersEl, { childList: true });
   }
 
   const openBtnEl = document.getElementById('open-market-local');
   openBtnEl?.addEventListener('click', () => toggleMarket(true));
   ensureMarketUI();
-  renderMarketList();
 })();
   </script>
 </body>
