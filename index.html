@@ -3775,134 +3775,94 @@ setTimeout(() => {
     applyTrainingComplianceWarnings();
   </script>
 
-  <!-- MSAL pre Microsoft Graph -->
-  <script src="https://alcdn.msauth.net/browser/2.38.2/js/msal-browser.min.js"></script>
 
-  <!-- ONEDRIVE TRH PRÁCE – doplnok (Microsoft Graph) -->
-  <script>
-/* ============ TRH PRÁCE cez OneDrive/SharePoint (Microsoft Graph) ============ */
-(function OneDriveMarket() {
-  // Konfigurácia Azure AD aplikácie
-  const APP_CLIENT_ID = 'eabcf3dc-651f-432e-a02f-827a71b65897';
-  const AUTHORITY = 'https://login.microsoftonline.com/organizations'; // podnikové účty
-  // Uistite sa, že Redirect URI v Azure = presná URL tejto stránky (GitHub Pages atď.)
-  const REDIRECT_URI = window.location.origin + window.location.pathname;
 
-  // OneDrive cesta
-  const MARKET_DIR = 'Documents/Trh';
+
+<!-- TRH PRÁCE – zdieľaný cez GitHub Gist (s lokálnym fallbackom) -->
+<script>
+(function SharedMarket() {
+  const OPEN_BTN_ID = 'open-market-local'; // existujúce tlačidlo v toolbare
+  const STORE_LOCAL_KEY = 'interactive-board-local-market-v1';
+  const CFG_KEY = 'market-shared-config-v1'; // { backend: 'gist'|'local', gistId, token }
   const MARKET_FILE = 'market.json';
 
-  // Scopes potrebné pre MS Graph
-  const GRAPH_SCOPES = ['User.Read', 'Files.ReadWrite', 'offline_access'];
-
-  // MSAL init
-  const msalConfig = {
-    auth: { clientId: APP_CLIENT_ID, authority: AUTHORITY, redirectUri: REDIRECT_URI },
-    cache: { cacheLocation: 'localStorage', storeAuthStateInCookie: false }
-  };
-  const msalInstance = new msal.PublicClientApplication(msalConfig);
-  let account = null;
-
-  msalInstance.handleRedirectPromise().then(res => {
-    if (res && res.account) {
-      account = res.account;
-      msalInstance.setActiveAccount(account);
-    } else {
-      account = msalInstance.getActiveAccount() || (msalInstance.getAllAccounts()[0] || null);
-      if (account) msalInstance.setActiveAccount(account);
-    }
-    updateBadge({ silent: true });
-  }).catch(e => console.warn('MSAL redirect error', e));
-
-  async function getTokenSilent() {
-    const acc = msalInstance.getActiveAccount() || (msalInstance.getAllAccounts()[0] || null);
-    if (!acc) return null;
-    try {
-      const r = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account: acc });
-      return r.accessToken;
-    } catch {
-      return null;
-    }
-  }
-  async function getTokenInteractive() {
-    const loginResult = await msalInstance.loginPopup({ scopes: GRAPH_SCOPES });
-    account = loginResult.account;
-    msalInstance.setActiveAccount(account);
-    const tokenRes = await msalInstance.acquireTokenSilent({ scopes: GRAPH_SCOPES, account });
-    return tokenRes.accessToken;
-  }
-  async function ensureToken({ interactive } = { interactive: false }) {
-    let tok = await getTokenSilent();
-    if (!tok && interactive) tok = await getTokenInteractive();
-    return tok;
+  // ===== Konfigurácia (uložená v prehliadači) =====
+  function loadCfg() { try { return JSON.parse(localStorage.getItem(CFG_KEY) || '{}'); } catch { return {}; } }
+  function saveCfg(patch) {
+    const cur = loadCfg();
+    const next = { backend: cur.backend || 'local', ...cur, ...patch };
+    localStorage.setItem(CFG_KEY, JSON.stringify(next));
+    return next;
   }
 
-  async function graph(url, { method = 'GET', body = null, headers = {}, interactive = false } = {}) {
-    const token = await ensureToken({ interactive });
-    if (!token) throw new Error('AUTH_REQUIRED');
-    const res = await fetch('https://graph.microsoft.com/v1.0' + url, {
-      method,
+  // ===== Lokálne úložisko =====
+  function localLoad() { try { return JSON.parse(localStorage.getItem(STORE_LOCAL_KEY) || '[]'); } catch { return []; } }
+  function localSave(arr) { localStorage.setItem(STORE_LOCAL_KEY, JSON.stringify(arr || [])); }
+
+  // ===== GitHub Gist backend =====
+  async function gistGetMeta(gistId, token) {
+    const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(gistId)}`, {
       headers: {
-        'Authorization': 'Bearer ' + token,
-        ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...headers
-      },
-      body: body ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined
-    });
-    if (!res.ok) {
-      const text = await res.text().catch(()=> '');
-      throw new Error('GRAPH_' + res.status + ':' + text);
-    }
-    return res;
-  }
-
-  async function ensureFolderExists() {
-    try {
-      await graph(`/me/drive/root:/${encodeURIComponent(MARKET_DIR)}`, { interactive: false });
-      return;
-    } catch (e) {
-      const msg = String(e.message || '');
-      if (!msg.startsWith('GRAPH_404')) throw e;
-      // Vytvor zložku Trh pod Documents
-      const parts = MARKET_DIR.split('/');
-      const folderName = parts.pop();
-      const parentPath = parts.join('/'); // 'Documents'
-      await graph(`/me/drive/root:/${encodeURIComponent(parentPath)}:/children`, {
-        method: 'POST',
-        body: { name: folderName, folder: {}, '@microsoft.graph.conflictBehavior': 'replace' },
-        interactive: true
-      });
-    }
-  }
-
-  async function loadRemoteMarket({ interactive } = { interactive: false }) {
-    const token = await ensureToken({ interactive });
-    if (!token) throw new Error('AUTH_REQUIRED');
-    await ensureFolderExists();
-    try {
-      const res = await graph(`/me/drive/root:/${encodeURIComponent(MARKET_DIR)}/${encodeURIComponent(MARKET_FILE)}:/content`, { interactive: false });
-      const text = await res.text();
-      if (!text.trim()) return [];
-      try { return JSON.parse(text); } catch { return []; }
-    } catch (e) {
-      const msg = String(e.message || '');
-      if (msg.startsWith('GRAPH_404')) {
-        await saveRemoteMarket([], { interactive: false });
-        return [];
+        'Accept': 'application/vnd.github+json',
+        ...(token ? { 'Authorization': 'token ' + token } : {})
       }
-      throw e;
+    });
+    if (!res.ok) throw new Error('GIST_GET_' + res.status);
+    return res.json();
+  }
+  async function gistLoad(gistId, token) {
+    const meta = await gistGetMeta(gistId, token);
+    const file = meta?.files?.[MARKET_FILE];
+    if (!file) {
+      // ak chýba, inicializuj prázdny obsah v giste
+      await gistSave(gistId, token, []);
+      return [];
     }
+    if (!file.truncated && typeof file.content === 'string') {
+      try { return JSON.parse(file.content || '[]'); } catch { return []; }
+    }
+    // ak truncated, načítaj RAW
+    if (file.raw_url) {
+      const res = await fetch(file.raw_url, {
+        headers: {
+          ...(token ? { 'Authorization': 'token ' + token } : {})
+        }
+      });
+      const txt = await res.text();
+      try { return JSON.parse(txt || '[]'); } catch { return []; }
+    }
+    return [];
+  }
+  async function gistSave(gistId, token, arr) {
+    const body = { files: { [MARKET_FILE]: { content: JSON.stringify(arr || [], null, 2) } } };
+    const res = await fetch(`https://api.github.com/gists/${encodeURIComponent(gistId)}`, {
+      method: 'PATCH',
+      headers: {
+        'Accept': 'application/vnd.github+json',
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': 'token ' + token } : {})
+      },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error('GIST_PATCH_' + res.status);
+    return res.json();
   }
 
-  async function saveRemoteMarket(arr, { interactive } = { interactive: true }) {
-    await ensureFolderExists();
-    const body = JSON.stringify(arr || [], null, 2);
-    await graph(`/me/drive/root:/${encodeURIComponent(MARKET_DIR)}/${encodeURIComponent(MARKET_FILE)}:/content`, {
-      method: 'PUT',
-      body,
-      headers: { 'Content-Type': 'application/json' },
-      interactive
-    });
+  // ===== Spoločné API pre Trh práce =====
+  async function marketLoad({ interactive=false } = {}) {
+    const cfg = loadCfg();
+    if (cfg.backend === 'gist' && cfg.gistId && cfg.token) {
+      return await gistLoad(cfg.gistId, cfg.token);
+    }
+    return localLoad();
+  }
+  async function marketSave(arr, { interactive=true } = {}) {
+    const cfg = loadCfg();
+    if (cfg.backend === 'gist' && cfg.gistId && cfg.token) {
+      await gistSave(cfg.gistId, cfg.token, arr);
+      return;
+    }
+    localSave(arr);
   }
 
   function buildWorkerSnapshot(workerEl) {
@@ -3919,43 +3879,36 @@ setTimeout(() => {
     };
   }
 
+  function escapeHTML(s) { return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
+  function formatDateSk(ts) { try { return new Date(ts).toLocaleString('sk-SK'); } catch { return ''; } }
+
   async function addToMarketFromWorkerEl(workerEl) {
     try {
-      const arr = await loadRemoteMarket({ interactive: true });
       const snap = buildWorkerSnapshot(workerEl);
-
+      const arr = await marketLoad();
       const duplicate = arr.some(r =>
         (r.worker?.workerName || '') === (snap.workerName || '') &&
         (r.worker?.teamName || '') === (snap.teamName || '') &&
         (r.worker?.centerName || '') === (snap.centerName || '')
       );
-      if (duplicate) {
-        alert('Tento pracovník už je na trhu práce.');
-        return;
-      }
-
-      const rec = { id: crypto.randomUUID(), placedAt: Date.now(), worker: snap };
-      arr.push(rec);
-      await saveRemoteMarket(arr, { interactive: true });
+      if (duplicate) { alert('Tento pracovník už je na trhu práce.'); return; }
+      arr.push({ id: crypto.randomUUID(), placedAt: Date.now(), worker: snap });
+      await marketSave(arr);
 
       workerEl.remove();
-      saveState();
-      updateDockUI();
-      updateTeamButtons();
-      refreshAttendanceCards();
+      saveState(); updateDockUI(); updateTeamButtons(); refreshAttendanceCards();
       await renderMarketList();
     } catch (e) {
-      if (String(e.message) === 'AUTH_REQUIRED') alert('Na používanie Trhu práce sa prihláste.');
-      else alert('Uloženie na Trh práce zlyhalo.');
       console.error(e);
+      alert('Uloženie na Trh práce zlyhalo.');
     } finally {
-      updateBadge({ silent: true });
+      updateBadge();
     }
   }
 
   async function takeFromMarket(recId) {
     try {
-      const arr = await loadRemoteMarket({ interactive: true });
+      const arr = await marketLoad();
       const idx = arr.findIndex(r => r.id === recId);
       if (idx < 0) return;
       const snap = arr[idx].worker;
@@ -3974,22 +3927,20 @@ setTimeout(() => {
       });
 
       arr.splice(idx, 1);
-      await saveRemoteMarket(arr, { interactive: true });
+      await marketSave(arr);
 
-      saveState();
-      updateDockUI();
-      updateTeamButtons();
-      refreshAttendanceCards();
+      saveState(); updateDockUI(); updateTeamButtons(); refreshAttendanceCards();
       await renderMarketList();
     } catch (e) {
-      alert('Operácia zlyhala.');
       console.error(e);
+      alert('Operácia zlyhala.');
     } finally {
-      updateBadge({ silent: true });
+      updateBadge();
     }
   }
 
-  let marketOverlay = null, marketListDiv = null, openBtn = document.getElementById('open-market-local');
+  // ===== UI modaly =====
+  let marketOverlay = null, marketListDiv = null, settingsOverlay = null;
 
   function ensureMarketUI() {
     if (marketOverlay) return;
@@ -3997,17 +3948,19 @@ setTimeout(() => {
     marketOverlay = document.createElement('div');
     marketOverlay.className = 'modal-overlay';
     marketOverlay.innerHTML = `
-      <div class="modal" role="dialog" aria-modal="true" aria-label="Trh práce (OneDrive)">
+      <div class="modal" role="dialog" aria-modal="true" aria-label="Trh práce">
         <div class="hd">
-          <div class="title">Trh práce (OneDrive)</div>
+          <div class="title">Trh práce <span id="market-mode-badge" style="font-size:12px;color:#6b7280;margin-left:8px"></span></div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-            <button type="button" id="market-refresh" title="Obnoviť zoznam">Obnoviť</button>
+            <button type="button" id="market-settings">Nastavenia zdieľania</button>
+            <button type="button" id="market-refresh">Obnoviť</button>
             <button type="button" id="market-close">Zavrieť</button>
           </div>
         </div>
         <div class="bd">
           <div class="hint" style="margin-bottom:8px">
-            Zobrazuje pracovníkov publikovaných do súboru Documents/Trh/market.json v OneDrive. Kliknutím na „Zobrať“ ich vrátiš späť na tabuľu.
+            - Režim „Gist“ = zdieľané medzi PC (vyžaduje Gist ID a GitHub token s rozsahom „gist“).<br/>
+            - Režim „Lokálne“ = len v tomto prehliadači.
           </div>
           <div id="market-list" style="display:grid;gap:8px"></div>
         </div>
@@ -4021,26 +3974,53 @@ setTimeout(() => {
     marketOverlay.addEventListener('click', (e) => { if (e.target === marketOverlay) toggleMarket(false); });
     marketOverlay.querySelector('#market-close')?.addEventListener('click', () => toggleMarket(false));
     marketOverlay.querySelector('#market-refresh')?.addEventListener('click', () => renderMarketList());
+    marketOverlay.querySelector('#market-settings')?.addEventListener('click', () => openSettings());
 
-    updateBadge({ silent: true });
+    // tlačidlo „Publikovať na trh“ na kartách pracovníkov
+    const attachPublishButton = (workerEl) => {
+      if (!workerEl || workerEl.dataset.type !== 'pracovnik') return;
+      if (workerEl.querySelector('.market-publish-btn')) return;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'market-publish-btn no-drag';
+      btn.title = 'Publikovať na trh práce';
+      btn.style.cssText = 'position:absolute;right:114px;bottom:8px;width:28px;height:28px;border-radius:50%;border:1px solid #e5e7eb;background:#fff;color:#2563eb;box-shadow:0 1px 3px rgba(0,0,0,0.15);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;z-index:1';
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
+      btn.addEventListener('click', (e) => { e.stopPropagation(); addToMarketFromWorkerEl(workerEl); });
+      workerEl.appendChild(btn);
+    };
+    document.querySelectorAll('.item[data-type="pracovnik"]').forEach(attachPublishButton);
+    const layerWorkersEl = document.getElementById('layer-workers');
+    if (layerWorkersEl) {
+      new MutationObserver(muts => {
+        muts.forEach(m => (m.addedNodes || []).forEach(n => {
+          if (n.nodeType === 1 && n.classList?.contains('item') && n.dataset.type === 'pracovnik') attachPublishButton(n);
+        }));
+      }).observe(layerWorkersEl, { childList: true });
+    }
+
+    updateBadge();
+    setModeBadge();
+  }
+
+  function setModeBadge() {
+    const b = document.getElementById('market-mode-badge');
+    if (!b) return;
+    const cfg = loadCfg();
+    b.textContent = (cfg.backend === 'gist' && cfg.gistId) ? '(Gist – zdieľané)' : '(Lokálne)';
   }
 
   function toggleMarket(open) {
     ensureMarketUI();
     marketOverlay.classList.toggle('open', !!open);
-    if (open) renderMarketList(true);
+    if (open) renderMarketList();
   }
 
-  function formatDateSk(ts) {
-    try { return new Date(ts).toLocaleString('sk-SK'); } catch { return ''; }
-  }
-  function escapeHTML(s) { return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c])); }
-
-  async function renderMarketList(interactive = false) {
+  async function renderMarketList() {
     if (!marketListDiv) return;
     marketListDiv.innerHTML = '<div style="color:#6b7280">Načítavam...</div>';
     try {
-      const items = await loadRemoteMarket({ interactive });
+      const items = await marketLoad();
       items.sort((a,b)=>b.placedAt-a.placedAt);
       marketListDiv.innerHTML = '';
       if (!items.length) {
@@ -4048,7 +4028,7 @@ setTimeout(() => {
         empty.style.color = '#6b7280';
         empty.textContent = 'Trh práce je prázdny.';
         marketListDiv.appendChild(empty);
-        updateBadge({ silent: true });
+        updateBadge();
         return;
       }
       items.forEach(rec => {
@@ -4072,76 +4052,123 @@ setTimeout(() => {
         takeBtn.addEventListener('click', () => takeFromMarket(rec.id));
 
         btns.appendChild(takeBtn);
-
         div.appendChild(left);
         div.appendChild(btns);
         marketListDiv.appendChild(div);
       });
     } catch (e) {
-      if (String(e.message) === 'AUTH_REQUIRED') {
-        marketListDiv.innerHTML = '<div style="color:#991b1b">Pre zobrazenie Trhu práce sa prihláste.</div>';
-      } else {
-        marketListDiv.innerHTML = '<div style="color:#991b1b">Načítanie zlyhalo.</div>';
-        console.error(e);
-      }
+      console.error(e);
+      marketListDiv.innerHTML = '<div style="color:#991b1b">Načítanie zlyhalo (skontroluj Gist ID a token v Nastaveniach).</div>';
     } finally {
-      updateBadge({ silent: true });
+      updateBadge();
+      setModeBadge();
     }
   }
 
-  async function updateBadge({ silent } = { silent: false }) {
+  function updateBadge() {
+    const btn = document.getElementById(OPEN_BTN_ID);
+    if (!btn) return;
     try {
-      const token = await ensureToken({ interactive: !silent && false });
-      if (!token) {
-        if (openBtn) openBtn.textContent = 'Trh práce';
-        return;
+      const cfg = loadCfg();
+      const items = (cfg.backend === 'gist' && cfg.gistId && cfg.token) ? null : localLoad();
+      if (items) {
+        const n = Array.isArray(items) ? items.length : 0;
+        btn.textContent = n > 0 ? `Trh práce (${n} – lokálne)` : 'Trh práce (lokálne)';
+      } else {
+        // v režime Gist nevoláme sieť kvôli značke; aktualizuje sa po renderi
+        btn.textContent = 'Trh práce (Gist)';
       }
-      const items = await loadRemoteMarket({ interactive: false }).catch(()=>[]);
-      const n = Array.isArray(items) ? items.length : 0;
-      if (openBtn) openBtn.textContent = n > 0 ? `Trh práce (${n})` : 'Trh práce';
-    } catch {
-      if (openBtn) openBtn.textContent = 'Trh práce';
-    }
+    } catch { btn.textContent = 'Trh práce'; }
   }
 
-  function attachPublishButton(workerEl) {
-    if (!workerEl || workerEl.dataset.type !== 'pracovnik') return;
-    if (workerEl.querySelector('.market-publish-btn')) return;
+  // ===== Nastavenia (Gist / Lokálne) =====
+  function openSettings() {
+    if (settingsOverlay) settingsOverlay.remove();
+    const cfg = loadCfg();
+    const ov = document.createElement('div');
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(17,24,39,0.45);z-index:400;display:flex;align-items:center;justify-content:center';
+    ov.innerHTML = `
+      <div style="background:#fff;border:1px solid #e5e7eb;border-radius:12px;box-shadow:0 18px 36px rgba(0,0,0,0.25);padding:14px;min-width:min(720px,94vw)">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+          <div style="font-weight:800">Nastavenia zdieľania Trhu práce</div>
+          <button type="button" id="st-x" title="Zavrieť">×</button>
+        </div>
+        <div style="display:grid;gap:10px">
+          <div>
+            <label style="font-weight:700;display:block;margin-bottom:6px">Režim</label>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <label><input type="radio" name="mode" value="gist" ${cfg.backend==='gist'?'checked':''}/> Gist (zdieľané)</label>
+              <label><input type="radio" name="mode" value="local" ${cfg.backend!=='gist'?'checked':''}/> Lokálne</label>
+            </div>
+          </div>
 
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'market-publish-btn no-drag';
-    btn.title = 'Publikovať na trh práce (OneDrive – karta sa presunie do zoznamu Trh práce)';
-    btn.style.cssText = 'position:absolute;right:114px;bottom:8px;width:28px;height:28px;border-radius:50%;border:1px solid #e5e7eb;background:#fff;color:#2563eb;box-shadow:0 1px 3px rgba(0,0,0,0.15);display:inline-flex;align-items:center;justify-content:center;cursor:pointer;z-index:1';
-    btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" width="16" height="16" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>';
+          <div style="border:1px solid #e5e7eb;border-radius:10px;padding:10px">
+            <div style="font-weight:700;margin-bottom:6px">GitHub Gist (vyplň pri zdieľanom režime)</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+              <div>
+                <label style="font-weight:600;display:block;margin-bottom:4px">Gist ID</label>
+                <input id="st-gist" type="text" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px" placeholder="napr. a1b2c3d4e5..." value="${escapeHTML(cfg.gistId || '')}"/>
+              </div>
+              <div>
+                <label style="font-weight:600;display:block;margin-bottom:4px">GitHub token (scope: gist)</label>
+                <input id="st-token" type="password" style="width:100%;padding:8px;border:1px solid #d1d5db;border-radius:8px" placeholder="ghp_..." value="${escapeHTML(cfg.token || '')}"/>
+              </div>
+            </div>
+            <div style="margin-top:8px;display:flex;gap:8px">
+              <button type="button" id="st-test">Test pripojenia</button>
+              <span id="st-result" style="font-size:12px;color:#6b7280"></span>
+            </div>
+          </div>
 
-    btn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      await addToMarketFromWorkerEl(workerEl);
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <button type="button" id="st-cancel">Zrušiť</button>
+            <button type="button" id="st-save" style="background:#22c55e;color:#fff;border:1px solid #22c55e;border-radius:8px;padding:8px 12px">Uložiť</button>
+          </div>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(ov);
+    settingsOverlay = ov;
+
+    const $ = (sel) => ov.querySelector(sel);
+    $('#st-x')?.addEventListener('click', ()=> ov.remove());
+    $('#st-cancel')?.addEventListener('click', ()=> ov.remove());
+    $('#st-save')?.addEventListener('click', async () => {
+      const mode = [...ov.querySelectorAll('input[name="mode"]')].find(i=>i.checked)?.value || 'local';
+      const gistId = $('#st-gist')?.value.trim();
+      const token = $('#st-token')?.value.trim();
+      const next = saveCfg({ backend: mode, gistId, token });
+      setModeBadge();
+      updateBadge();
+      ov.remove();
+      await renderMarketList();
     });
-
-    workerEl.appendChild(btn);
-  }
-
-  document.querySelectorAll('.item[data-type="pracovnik"]').forEach(attachPublishButton);
-  const layerWorkersEl = document.getElementById('layer-workers');
-  if (layerWorkersEl) {
-    const obs = new MutationObserver(muts => {
-      muts.forEach(m => {
-        m.addedNodes && m.addedNodes.forEach(n => {
-          if (n.nodeType === 1 && n.classList?.contains('item') && n.dataset.type === 'pracovnik') {
-            attachPublishButton(n);
-          }
-        });
-      });
+    $('#st-test')?.addEventListener('click', async () => {
+      const gistId = $('#st-gist')?.value.trim();
+      const token = $('#st-token')?.value.trim();
+      const res = $('#st-result');
+      res.textContent = 'Testujem…';
+      res.style.color = '#6b7280';
+      try {
+        const meta = await gistGetMeta(gistId, token);
+        const ok = !!meta?.files?.[MARKET_FILE];
+        res.textContent = ok ? 'OK – súbor market.json existuje' : 'Pripojené – market.json sa vytvorí pri prvom uložení';
+        res.style.color = '#166534';
+      } catch (e) {
+        res.textContent = 'Chyba – over Gist ID a token (secret gist vyžaduje token).';
+        res.style.color = '#991b1b';
+      }
     });
-    obs.observe(layerWorkersEl, { childList: true });
   }
 
-  const openBtnEl = document.getElementById('open-market-local');
-  openBtnEl?.addEventListener('click', () => toggleMarket(true));
+  // Tlačidlo v toolbare
+  document.getElementById(OPEN_BTN_ID)?.addEventListener('click', () => toggleMarket(true));
+
+  // Inicializácia
   ensureMarketUI();
+  renderMarketList();
 })();
-  </script>
+</script>
 </body>
 </html>
+
